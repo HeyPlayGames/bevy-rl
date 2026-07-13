@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sim_core",
+    "crates/sim_envs",
+    "crates/sim_viewer",
+    "bins/headless",
+    "bins/viewer",
+]
+default-members = ["bins/headless", "bins/viewer"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bevy = { version = "0.19", default-features = false }
+avian3d = { version = "0.7", default-features = false, features = [
+    "3d",
+    "f32",
+    "parry-f32",
+    "xpbd_joints",
+    "parallel",
+] }
+bevy_transform_interpolation = "0.5"
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+sim_core = { path = "crates/sim_core" }
+sim_envs = { path = "crates/sim_envs" }
+sim_viewer = { path = "crates/sim_viewer" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
