@@ -13,7 +13,8 @@ pub use creature::{
     BodyDesc, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind, PoseDesc,
 };
 pub use env::{
-    env_collision_layers, env_origin, EnvId, EnvIsolationConfig, EnvRoot, SimBody, SimJoint,
+    env_creature_collision_layers, env_origin, env_world_collision_layers, EnvId,
+    EnvIsolationConfig, EnvRoot, SimBody, SimJoint,
 };
 pub use plugin::{configure_headless_app, HeadlessSimConfig, SimCorePlugin, SimTick};
 pub use spawn::{
@@ -22,10 +23,10 @@ pub use spawn::{
 
 pub mod prelude {
     pub use crate::{
-        despawn_env, env_collision_layers, env_origin, reset_env, spawn_creature, spawn_env_root,
-        BodyDesc, BodyShape, CreatureDesc, CreatureInstance, EnvId, EnvIsolationConfig, EnvRoot,
-        HeadlessSimConfig, JointDesc, JointKind, PoseDesc, SimBody, SimCorePlugin, SimJoint,
-        SimTick, configure_headless_app,
+        despawn_env, env_creature_collision_layers, env_origin, env_world_collision_layers,
+        reset_env, spawn_creature, spawn_env_root, BodyDesc, BodyShape, CreatureDesc,
+        CreatureInstance, EnvId, EnvIsolationConfig, EnvRoot, HeadlessSimConfig, JointDesc,
+        JointKind, PoseDesc, SimBody, SimCorePlugin, SimJoint, SimTick, configure_headless_app,
     };
     pub use avian3d::prelude::*;
     pub use bevy::prelude::{

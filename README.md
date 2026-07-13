@@ -28,6 +28,6 @@ cargo run -p sim_viewer_bin
 
 - Sims tick in `FixedPostUpdate` (Avian default) at 60 Hz.
 - Headless uses `TimeUpdateStrategy::ManualDuration` so wall clock does not throttle throughput.
-- Isolation: env origins on a grid (`spacing` default 40) + `CollisionLayers` from `env_id % 31`.
+- Isolation: env origins on a grid (`spacing` default 40) + paired `CollisionLayers` (`env_id % 15`) so creatures hit world geometry but not themselves.
 - Creatures are physics-first articulations (capsules/cuboids + revolute/spherical joints). Visuals are debug meshes matching colliders.
 - Viewer: 2×2 cameras with viewports + `TransformInterpolation` on dynamic bodies (render rate ≠ sim rate).

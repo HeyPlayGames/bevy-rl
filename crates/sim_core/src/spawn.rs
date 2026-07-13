@@ -8,7 +8,8 @@ use crate::creature::{
     BodyDesc, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind,
 };
 use crate::env::{
-    env_collision_layers, env_origin, EnvId, EnvIsolationConfig, EnvRoot, SimBody, SimJoint,
+    env_creature_collision_layers, env_origin, EnvId, EnvIsolationConfig, EnvRoot, SimBody,
+    SimJoint,
 };
 
 /// Spawns an empty env root marker at the isolated world origin.
@@ -38,7 +39,7 @@ pub fn spawn_creature(
     creature: &CreatureDesc,
     interpolate: bool,
 ) -> CreatureInstance {
-    let layers = env_collision_layers(env_id);
+    let layers = env_creature_collision_layers(env_id);
 
     let creature_root = commands
         .spawn((

@@ -64,12 +64,29 @@ pub fn env_origin(env_id: EnvId, config: &EnvIsolationConfig) -> Vec3 {
     )
 }
 
-/// Collision layers so bodies only interact within the same env slot.
+/// Collision layer pair for one env slot: creature bodies vs world geometry.
 ///
-/// Avian exposes 32 layers. Layer 0 is left unused (default). Envs map to
-/// layers 1..=31 via `env_id % 31`. Spatial separation covers the wrap case.
-pub fn env_collision_layers(env_id: EnvId) -> CollisionLayers {
-    let slot = (env_id.0 % 31) + 1;
-    let bit = 1u32 << slot;
-    CollisionLayers::from_bits(bit, bit)
+/// Avian has 32 layers; layer 0 is left unused. Each env uses two layers
+/// (`creature` then `world`) via `env_id % 15`, so creatures collide with
+/// ground but not with other bodies of the same creature. Spatial separation
+/// covers the wrap case when more than 15 envs share a world.
+fn env_layer_bits(env_id: EnvId) -> (u32, u32) {
+    let slot = env_id.0 % 15;
+    let creature_bit = 1u32 << (slot * 2 + 1);
+    let world_bit = 1u32 << (slot * 2 + 2);
+    (creature_bit, world_bit)
+}
+
+/// Layers for articulated creature bodies: membership on the env creature layer,
+/// filtering only the env world layer (no self-collision between body parts).
+pub fn env_creature_collision_layers(env_id: EnvId) -> CollisionLayers {
+    let (creature_bit, world_bit) = env_layer_bits(env_id);
+    CollisionLayers::from_bits(creature_bit, world_bit)
+}
+
+/// Layers for env world geometry (ground, etc.): membership on the env world
+/// layer, filtering the env creature layer.
+pub fn env_world_collision_layers(env_id: EnvId) -> CollisionLayers {
+    let (creature_bit, world_bit) = env_layer_bits(env_id);
+    CollisionLayers::from_bits(world_bit, creature_bit)
 }

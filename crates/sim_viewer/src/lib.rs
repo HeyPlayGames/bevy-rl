@@ -2,6 +2,7 @@
 
 use avian3d::prelude::*;
 use bevy::camera::Viewport;
+use bevy::light::CascadeShadowConfigBuilder;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
@@ -12,11 +13,12 @@ use bevy::ui_widgets::{
 use bevy::window::WindowResolution;
 use sim_core::prelude::*;
 use sim_envs::{
-    dog_quadruped_desc, spawn_dog_ground_env, DogGroundPlugin, GroundMeshData, SpawnDogGroundBatch,
+    dog_quadruped_desc, ground_half_extents, spawn_dog_ground_env, DogGroundEnv, DogGroundPlugin,
+    SpawnDogGroundBatch,
 };
 
 const MAX_VIEW_COUNT: usize = 64;
-const DEFAULT_ENV_COUNT: usize = 8;
+const DEFAULT_ENV_COUNT: usize = 4;
 
 const SLIDER_TRACK: Color = Color::srgb(0.12, 0.13, 0.16);
 const SLIDER_THUMB: Color = Color::srgb(0.35, 0.65, 0.42);
@@ -109,10 +111,15 @@ fn setup_lights(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
             illuminance: 4_500.0,
-            shadow_maps_enabled: false,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, 0.6, 0.0)),
+        CascadeShadowConfigBuilder {
+            maximum_distance: 25.0,
+            ..default()
+        }
+        .build(),
     ));
 }
 
@@ -289,10 +296,7 @@ fn on_env_count_changed(
     bodies: Query<(Entity, &SimBody)>,
     joints: Query<(Entity, &SimJoint)>,
 ) {
-    let count = value_change
-        .value
-        .round()
-        .clamp(1.0, MAX_VIEW_COUNT as f32) as usize;
+    let count = value_change.value.round().clamp(1.0, MAX_VIEW_COUNT as f32) as usize;
     state.env_count = count;
 
     for mut text in &mut count_labels {
@@ -315,13 +319,7 @@ fn on_env_count_changed(
     }
 
     for index in env_indices {
-        despawn_env(
-            &mut commands,
-            EnvId::new(index),
-            &roots,
-            &bodies,
-            &joints,
-        );
+        despawn_env(&mut commands, EnvId::new(index), &roots, &bodies, &joints);
     }
 
     for index in 0..count as u32 {
@@ -466,6 +464,7 @@ struct DebugMeshAttached;
 struct DebugMeshAssets {
     capsule_meshes: std::collections::HashMap<(u32, u32), Handle<Mesh>>,
     cuboid_meshes: std::collections::HashMap<(u32, u32, u32), Handle<Mesh>>,
+    ground_mesh: Handle<Mesh>,
     dog_material: Handle<StandardMaterial>,
     ground_material: Handle<StandardMaterial>,
 }
@@ -474,6 +473,7 @@ fn setup_debug_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    isolation: Res<EnvIsolationConfig>,
 ) {
     let dog_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.75, 0.55, 0.35),
@@ -483,7 +483,6 @@ fn setup_debug_meshes(
     let ground_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.62, 0.62, 0.66),
         perceptual_roughness: 0.95,
-        cull_mode: None,
         ..default()
     });
 
@@ -496,9 +495,9 @@ fn setup_debug_meshes(
         match body.shape {
             BodyShape::Capsule { radius, length } => {
                 let key = ((radius * 1000.0) as u32, (length * 1000.0) as u32);
-                capsule_meshes.entry(key).or_insert_with(|| {
-                    meshes.add(Capsule3d::new(radius, length))
-                });
+                capsule_meshes
+                    .entry(key)
+                    .or_insert_with(|| meshes.add(Capsule3d::new(radius, length)));
             }
             BodyShape::Cuboid { half_extents } => {
                 let key = (
@@ -506,15 +505,15 @@ fn setup_debug_meshes(
                     (half_extents.y * 1000.0) as u32,
                     (half_extents.z * 1000.0) as u32,
                 );
-                cuboid_meshes.entry(key).or_insert_with(|| {
-                    meshes.add(Cuboid::from_size(half_extents * 2.0))
-                });
+                cuboid_meshes
+                    .entry(key)
+                    .or_insert_with(|| meshes.add(Cuboid::from_size(half_extents * 2.0)));
             }
             BodyShape::Cylinder { radius, height } => {
                 let key = ((radius * 1000.0) as u32, (height * 1000.0) as u32);
-                capsule_meshes.entry(key).or_insert_with(|| {
-                    meshes.add(Cylinder::new(radius, height))
-                });
+                capsule_meshes
+                    .entry(key)
+                    .or_insert_with(|| meshes.add(Cylinder::new(radius, height)));
             }
             BodyShape::Sphere { radius } => {
                 let key = ((radius * 1000.0) as u32, 0);
@@ -525,9 +524,13 @@ fn setup_debug_meshes(
         }
     }
 
+    let ground_half = ground_half_extents(&isolation);
+    let ground_mesh = meshes.add(Cuboid::from_size(ground_half * 2.0));
+
     commands.insert_resource(DebugMeshAssets {
         capsule_meshes,
         cuboid_meshes,
+        ground_mesh,
         dog_material,
         ground_material,
     });
@@ -536,23 +539,21 @@ fn setup_debug_meshes(
 fn attach_debug_meshes(
     mut commands: Commands,
     assets: Res<DebugMeshAssets>,
-    mut meshes: ResMut<Assets<Mesh>>,
     bodies: Query<
         (
             Entity,
             &SimBody,
             &RigidBody,
             Option<&Name>,
-            Option<&GroundMeshData>,
+            Option<&DogGroundEnv>,
         ),
         Without<DebugMeshAttached>,
     >,
 ) {
-    for (entity, sim_body, rigid_body, name, ground_mesh) in &bodies {
-        if let Some(ground_mesh) = ground_mesh {
-            let mesh = meshes.add(mesh_from_ground_data(ground_mesh));
+    for (entity, sim_body, rigid_body, name, ground) in &bodies {
+        if ground.is_some() {
             commands.entity(entity).insert((
-                Mesh3d(mesh),
+                Mesh3d(assets.ground_mesh.clone()),
                 MeshMaterial3d(assets.ground_material.clone()),
                 DebugMeshAttached,
             ));
@@ -608,43 +609,6 @@ fn attach_debug_meshes(
             DebugMeshAttached,
         ));
     }
-}
-
-fn mesh_from_ground_data(ground_mesh: &GroundMeshData) -> Mesh {
-    let positions: Vec<[f32; 3]> = ground_mesh
-        .vertices
-        .iter()
-        .map(|vertex| vertex.to_array())
-        .collect();
-    let indices: Vec<u32> = ground_mesh.indices.iter().flatten().copied().collect();
-
-    let mut normals = vec![[0.0, 1.0, 0.0]; positions.len()];
-    let mut accumulated = vec![Vec3::ZERO; positions.len()];
-    for triangle in indices.chunks_exact(3) {
-        let index_a = triangle[0] as usize;
-        let index_b = triangle[1] as usize;
-        let index_c = triangle[2] as usize;
-        let position_a = Vec3::from_array(positions[index_a]);
-        let position_b = Vec3::from_array(positions[index_b]);
-        let position_c = Vec3::from_array(positions[index_c]);
-        let normal = (position_b - position_a)
-            .cross(position_c - position_a)
-            .normalize_or_zero();
-        accumulated[index_a] += normal;
-        accumulated[index_b] += normal;
-        accumulated[index_c] += normal;
-    }
-    for (index, normal) in accumulated.iter().enumerate() {
-        normals[index] = normal.normalize_or_zero().to_array();
-    }
-
-    Mesh::new(
-        bevy::render::render_resource::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-    .with_inserted_indices(bevy::mesh::Indices::U32(indices))
 }
 
 /// Convenience entry used by the viewer binary.
