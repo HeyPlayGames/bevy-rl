@@ -137,7 +137,7 @@ pub struct GroundMeshData {
 }
 
 const GROUND_RESOLUTION: usize = 32;
-const GROUND_BUMP_AMPLITUDE: f32 = 0.4;
+const GROUND_BUMP_AMPLITUDE: f32 = 0.1;
 
 fn generate_bumpy_ground_mesh(seed: u32, resolution: usize, size: f32) -> GroundMeshData {
     let mut vertices = Vec::with_capacity(resolution * resolution);
