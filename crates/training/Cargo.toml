@@ -22,3 +22,6 @@ burn = { workspace = true, default-features = false, features = [
 ] }
 policy = { workspace = true }
 sim_core = { workspace = true }
+
+[lints]
+workspace = true

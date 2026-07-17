@@ -15,7 +15,7 @@ pub struct DogBalanceConfig {
     pub height_weight: f32,
     /// Episode ends when torso height drops below this.
     pub min_height: f32,
-    /// Episode ends when uprightness (up · world_up) drops below this.
+    /// Episode ends when uprightness (`up · world_up`) drops below this.
     pub min_upright: f32,
     /// Added to the step reward on the fall-terminal step.
     pub fall_penalty: f32,

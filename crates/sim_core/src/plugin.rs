@@ -84,6 +84,10 @@ pub fn configure_headless_app(app: &mut App, config: &HeadlessSimConfig) {
         .insert_resource(Time::<Fixed>::from_hz(config.fixed_hz))
         .insert_resource(TimeUpdateStrategy::ManualDuration(step));
 
+    if !app.is_plugin_added::<bevy::log::LogPlugin>() {
+        app.add_plugins(bevy::log::LogPlugin::default());
+    }
+
     if let Some(max_ticks) = config.max_ticks {
         app.insert_resource(MaxTicks(max_ticks))
             .add_systems(RunFixedMainLoop, exit_after_max_ticks);

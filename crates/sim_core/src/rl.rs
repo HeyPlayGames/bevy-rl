@@ -82,9 +82,7 @@ impl RlBuffers {
         action_dim: usize,
         horizon: u32,
     ) {
-        self.observations = (0..env_count)
-            .map(|_| vec![0.0; observation_dim])
-            .collect();
+        self.observations = (0..env_count).map(|_| vec![0.0; observation_dim]).collect();
         self.actions = (0..env_count).map(|_| vec![0.0; action_dim]).collect();
         self.rewards = vec![0.0; env_count];
         self.episode_steps = vec![0; env_count];

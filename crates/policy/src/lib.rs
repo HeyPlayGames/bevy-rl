@@ -4,9 +4,7 @@ mod actor_critic;
 mod checkpoint;
 mod gaussian;
 
-pub use actor_critic::{
-    ActorCritic, ActorCriticArchConfig, ActorCriticConfig, ActorCriticOutput,
-};
+pub use actor_critic::{ActorCritic, ActorCriticArchConfig, ActorCriticConfig, ActorCriticOutput};
 pub use checkpoint::{
     checkpoint_root, creature_checkpoint_dir, latest_checkpoint_stem,
     load_latest_creature_checkpoint, load_policy_checkpoint, resolve_checkpoint_stem,

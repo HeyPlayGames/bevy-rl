@@ -434,9 +434,7 @@ fn orbit_env_cameras(
     ui_hovered: Query<&Hovered, Or<(With<Slider>, With<Button>)>>,
     mut cameras: Query<(&mut EnvCamera, &mut Transform)>,
 ) {
-    if mouse_buttons.just_released(MouseButton::Left) {
-        drag.active_slot = None;
-    } else if !mouse_buttons.pressed(MouseButton::Left) {
+    if !mouse_buttons.pressed(MouseButton::Left) {
         drag.active_slot = None;
     } else if mouse_buttons.just_pressed(MouseButton::Left) {
         let ui_blocking = ui_hovered.iter().any(|hovered| hovered.0);

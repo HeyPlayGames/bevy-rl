@@ -58,11 +58,7 @@ pub fn apply_revolute_angles(creature: &mut CreatureDesc, angles: &HashMap<Strin
         let Some(&requested) = angles.get(&joint.name) else {
             continue;
         };
-        let JointKind::Revolute {
-            axis,
-            angle_limits,
-        } = &joint.kind
-        else {
+        let JointKind::Revolute { axis, angle_limits } = &joint.kind else {
             continue;
         };
 
@@ -112,8 +108,7 @@ pub fn transform_creature_poses(
 ) {
     let rotation = rotation.normalize();
     for body in &mut creature.bodies {
-        body.pose.translation =
-            pivot + rotation * (body.pose.translation - pivot) + translation;
+        body.pose.translation = pivot + rotation * (body.pose.translation - pivot) + translation;
         body.pose.rotation = (rotation * body.pose.rotation).normalize();
     }
 }

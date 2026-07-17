@@ -51,9 +51,7 @@ impl From<io::Error> for JsonConfigError {
 }
 
 /// Load a typed config from a JSON file.
-pub fn load_json_config<T: DeserializeOwned>(
-    path: impl AsRef<Path>,
-) -> Result<T, JsonConfigError> {
+pub fn load_json_config<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, JsonConfigError> {
     let path = path.as_ref();
     let text = fs::read_to_string(path)?;
     serde_json::from_str(&text).map_err(|source| JsonConfigError::Parse {

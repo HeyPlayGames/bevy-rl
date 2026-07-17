@@ -18,3 +18,6 @@ bevy = { workspace = true, features = [
 ] }
 dog = { path = "../.." }
 training = { workspace = true }
+
+[lints]
+workspace = true

@@ -61,15 +61,13 @@ pub fn attach_dog_actuation(commands: &mut Commands, instance: &CreatureInstance
         let Some(&joint_entity) = instance.joints.get(*joint_name) else {
             continue;
         };
-        commands
-            .entity(joint_entity)
-            .insert((
-                ActuatedRevolute {
-                    action_index,
-                    rest_angle: 0.0,
-                },
-                JointTargetAngle(0.0),
-            ));
+        commands.entity(joint_entity).insert((
+            ActuatedRevolute {
+                action_index,
+                rest_angle: 0.0,
+            },
+            JointTargetAngle(0.0),
+        ));
     }
 }
 
@@ -180,7 +178,14 @@ fn refresh_dog_observations_after_reset(
     transforms: Query<&Transform>,
     angular_velocities: Query<&AngularVelocity>,
 ) {
-    write_dog_observations(buffers, roots, bodies, joints, transforms, angular_velocities);
+    write_dog_observations(
+        buffers,
+        roots,
+        bodies,
+        joints,
+        transforms,
+        angular_velocities,
+    );
 }
 
 fn write_dog_rewards(
@@ -232,14 +237,7 @@ fn soft_reset_dog_env(
     let mut dog = dog_quadruped_desc();
     apply_dog_spawn_noise(&mut dog, spawn_noise);
     let world_origin = env_origin(env_id, isolation);
-    soft_reset_creature(
-        commands,
-        env_id,
-        world_origin,
-        &dog,
-        bodies,
-        joint_targets,
-    );
+    soft_reset_creature(commands, env_id, world_origin, &dog, bodies, joint_targets);
 }
 
 /// Soft-reset every dog env with spawn-pose noise.
@@ -325,13 +323,12 @@ fn advance_and_reset_episodes(
     }
 
     let horizon = buffers.episode_horizon;
-    for env_index in 0..env_count {
+    for (env_index, &fallen) in fallen_by_env.iter().enumerate() {
         buffers.episode_terminated[env_index] = false;
         buffers.episode_truncated[env_index] = false;
         buffers.episode_done[env_index] = false;
         buffers.episode_steps[env_index] = buffers.episode_steps[env_index].saturating_add(1);
 
-        let fallen = fallen_by_env[env_index];
         if fallen {
             buffers.rewards[env_index] += config.fall_penalty;
         }

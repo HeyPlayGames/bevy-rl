@@ -15,7 +15,7 @@ pub struct CreatureRoot {
     pub env_id: EnvId,
 }
 
-/// One controlled revolute DoF. `action_index` is stable across resets.
+/// One controlled revolute degree of freedom. `action_index` is stable across resets.
 ///
 /// `rest_angle` is the joint angle commanded when the normalized action is `0`
 /// (typically the spawn / standing pose). Action `-1` / `+1` still map to the
@@ -56,12 +56,8 @@ pub fn apply_joint_targets(
             continue;
         };
 
-        let target_angle = action_to_target_angle(
-            command.0,
-            limits.min,
-            limits.max,
-            actuated.rest_angle,
-        );
+        let target_angle =
+            action_to_target_angle(command.0, limits.min, limits.max, actuated.rest_angle);
 
         if !joint.motor.enabled {
             joint.motor = AngularMotor::new(MotorModel::DEFAULT);

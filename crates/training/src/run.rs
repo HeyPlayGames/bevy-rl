@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use burn::{
     backend::{Autodiff, Wgpu},
     module::AutodiffModule,
-    tensor::{Transaction, Tensor},
+    tensor::{Tensor, Transaction},
 };
 use policy::{
     load_policy_checkpoint, save_creature_checkpoint, ActorCritic, ActorCriticArchConfig,
@@ -127,14 +127,14 @@ pub fn run_ppo(
     let policy_config = match ActorCriticConfig::from_arch_file(observation_dim, action_dim, None) {
         Ok(config) => config,
         Err(error) => {
-            eprintln!(
+            error!(
                 "failed to load actor-critic config from {}: {error}",
                 ActorCriticArchConfig::default_path().display()
             );
             std::process::exit(1);
         }
     };
-    println!(
+    info!(
         "policy arch: hidden_dims={:?} initial_log_std={}",
         policy_config.hidden_dims, policy_config.initial_log_std
     );
@@ -149,12 +149,12 @@ pub fn run_ppo(
             ) {
                 Ok(loaded) => loaded,
                 Err(error) => {
-                    eprintln!("failed to load checkpoint from {}: {error}", path.display());
+                    error!("failed to load checkpoint from {}: {error}", path.display());
                     std::process::exit(1);
                 }
             };
 
-            println!(
+            info!(
                 "loaded checkpoint update_index={} mean_rewards={} mean_episode_lengths={} from {}",
                 meta.update_index,
                 meta.mean_rewards.len(),
@@ -171,7 +171,7 @@ pub fn run_ppo(
         optimizer = load_optimizer_checkpoint_or_fresh(optimizer, &device, path);
     }
 
-    println!(
+    info!(
         "trainer start: creature={creature_id} envs={env_count} updates={total_updates} episode_horizon={episode_horizon} obs={observation_dim} action={action_dim}"
     );
 
@@ -188,7 +188,7 @@ pub fn run_ppo(
         }
 
         if let Err(error) = reset_all_envs(app.world_mut()) {
-            eprintln!("failed to reset envs before update {update_index}: {error}");
+            error!("failed to reset envs before update {update_index}: {error}");
             std::process::exit(1);
         }
         // Apply resets, then clear episode counters so the horizon run is clean.
@@ -208,8 +208,7 @@ pub fn run_ppo(
         // Rollout inference skips Autodiff; only actions sync each step (Bevy needs them).
         // Log-probs / values stay on device and download once after the horizon.
         let inference_model = model.valid();
-        let mut pending_log_probs =
-            Vec::with_capacity(episode_horizon);
+        let mut pending_log_probs = Vec::with_capacity(episode_horizon);
         let mut pending_values = Vec::with_capacity(episode_horizon);
 
         for step in 0..episode_horizon {
@@ -238,7 +237,7 @@ pub fn run_ppo(
                     .and_then(|tensor_data| tensor_data.to_vec::<f32>().ok())
                     .unwrap_or_default(),
                 Err(error) => {
-                    eprintln!("failed to read actions at step {step}: {error}");
+                    error!("failed to read actions at step {step}: {error}");
                     std::process::exit(1);
                 }
             };
@@ -319,7 +318,7 @@ pub fn run_ppo(
                     (log_probs, values, bootstrap)
                 }
                 Err(error) => {
-                    eprintln!("failed to read rollout policy outputs: {error}");
+                    error!("failed to read rollout policy outputs: {error}");
                     std::process::exit(1);
                 }
             };
@@ -363,7 +362,7 @@ pub fn run_ppo(
 
         match save_creature_checkpoint(&inference_model, &meta) {
             Ok(paths) => {
-                println!(
+                info!(
                     "checkpoint saved: {} and {}",
                     paths.latest_weights_stem.with_extension("mpk").display(),
                     paths.step_weights_stem.with_extension("mpk").display()
@@ -372,10 +371,10 @@ pub fn run_ppo(
                 for weights_stem in [&paths.latest_weights_stem, &paths.step_weights_stem] {
                     match save_optimizer_checkpoint(&optimizer, weights_stem) {
                         Ok(optim_path) => {
-                            println!("optimizer checkpoint saved: {}", optim_path.display());
+                            info!("optimizer checkpoint saved: {}", optim_path.display());
                         }
                         Err(error) => {
-                            eprintln!(
+                            error!(
                                 "failed to save optimizer checkpoint for {}: {error}",
                                 weights_stem.display()
                             );
@@ -385,13 +384,13 @@ pub fn run_ppo(
                 }
             }
             Err(error) => {
-                eprintln!("failed to save checkpoint at end of training: {error}");
+                error!("failed to save checkpoint at end of training: {error}");
                 std::process::exit(1);
             }
         }
     }
 
-    println!("trainer done in {:.1}s", wall_clock.elapsed().as_secs_f64());
+    info!("trainer done in {:.1}s", wall_clock.elapsed().as_secs_f64());
 }
 
 /// Resolve `--load` with no path to the creature's latest checkpoint stem.
@@ -399,7 +398,7 @@ pub fn resolve_latest_checkpoint(creature_id: &str) -> PathBuf {
     match policy::latest_checkpoint_stem(creature_id) {
         Ok(stem) => stem,
         Err(error) => {
-            eprintln!("failed to resolve latest checkpoint path: {error}");
+            error!("failed to resolve latest checkpoint path: {error}");
             std::process::exit(1);
         }
     }

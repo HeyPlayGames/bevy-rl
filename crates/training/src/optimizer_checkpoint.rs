@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use bevy::prelude::{info, warn};
 use burn::{
     module::AutodiffModule,
     optim::Optimizer,
@@ -64,8 +65,8 @@ where
     let optim_file = optimizer_file_path(&optim_stem);
 
     if !optim_file.exists() {
-        eprintln!(
-            "warning: optimizer checkpoint missing at {}, continuing with empty Adam",
+        warn!(
+            "optimizer checkpoint missing at {}, continuing with empty Adam",
             optim_file.display()
         );
         return optimizer;
@@ -74,15 +75,12 @@ where
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     match recorder.load(optim_stem.clone(), device) {
         Ok(record) => {
-            println!(
-                "loaded optimizer checkpoint from {}",
-                optim_file.display()
-            );
+            info!("loaded optimizer checkpoint from {}", optim_file.display());
             optimizer.load_record(record)
         }
         Err(error) => {
-            eprintln!(
-                "warning: failed to load optimizer checkpoint from {}: {error}; continuing with empty Adam",
+            warn!(
+                "failed to load optimizer checkpoint from {}: {error}; continuing with empty Adam",
                 optim_file.display()
             );
             optimizer

@@ -54,11 +54,7 @@ impl ViewerPolicy {
         action_dim: usize,
     ) -> Result<(), String> {
         let config = ActorCriticConfig::from_arch_file(observation_dim, action_dim, None)
-            .map_err(|error| {
-                format!(
-                    "failed to load actor-critic config: {error}"
-                )
-            })?;
+            .map_err(|error| format!("failed to load actor-critic config: {error}"))?;
         let (model, meta) =
             load_policy_checkpoint::<InferenceBackend>(&self.device, path, creature_id, &config)
                 .map_err(|error| {
@@ -270,7 +266,6 @@ fn on_load_policy_activated(
         policy.load_from_path(&path, spec.id, spec.observation_dim, spec.action_dim)
     {
         bevy::log::error!("{message}");
-        eprintln!("{message}");
         policy.clear();
         for actions in &mut buffers.actions {
             actions.fill(0.0);
@@ -294,7 +289,7 @@ fn display_name_for_path(path: &Path) -> String {
     let stem = resolve_checkpoint_stem(path);
     stem.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.to_string())
+        .map(str::to_string)
         .unwrap_or_else(|| stem.display().to_string())
 }
 

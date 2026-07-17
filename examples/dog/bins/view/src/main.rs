@@ -10,13 +10,16 @@ fn parse_env_count() -> u32 {
         if let Ok(value) = argument.parse::<u32>() {
             env_count = value.clamp(1, 64);
         } else {
-            eprintln!("warning: ignoring unrecognized argument '{argument}'");
+            warn!("ignoring unrecognized argument '{argument}'");
         }
     }
     env_count
 }
 
 fn main() {
+    // So CLI arg warnings work before the viewer app is built.
+    App::new().add_plugins(bevy::log::LogPlugin::default());
+
     run_viewer(
         parse_env_count(),
         ViewerCreatureVisuals {

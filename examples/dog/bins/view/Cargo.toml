@@ -13,3 +13,6 @@ path = "src/main.rs"
 bevy = { workspace = true, default-features = true }
 dog = { path = "../.." }
 sim_viewer = { workspace = true }
+
+[lints]
+workspace = true

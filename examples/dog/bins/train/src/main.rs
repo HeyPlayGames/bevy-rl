@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use bevy::ecs::system::RunSystemOnce;
+use bevy::prelude::*;
 use dog::{reset_all_envs, DogPlugin, CREATURE_ID, DOG_ACTION_DIM, DOG_OBS_DIM};
 use training::{resolve_latest_checkpoint, run_ppo, PpoTrainConfig};
 
@@ -37,7 +38,7 @@ fn parse_args() -> TrainerArgs {
         if let Ok(value) = argument.parse::<usize>() {
             positionals.push(value);
         } else {
-            eprintln!("warning: ignoring unrecognized argument '{argument}'");
+            warn!("ignoring unrecognized argument '{argument}'");
         }
     }
 
@@ -56,6 +57,9 @@ fn parse_args() -> TrainerArgs {
 }
 
 fn main() {
+    // So CLI arg warnings work before the training app is built.
+    App::new().add_plugins(bevy::log::LogPlugin::default());
+
     let args = parse_args();
 
     let config = PpoTrainConfig {

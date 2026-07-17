@@ -12,3 +12,6 @@ burn = { workspace = true, default-features = false, features = ["std", "wgpu"] 
 sim_core = { workspace = true }
 policy = { workspace = true }
 rfd = { workspace = true }
+
+[lints]
+workspace = true

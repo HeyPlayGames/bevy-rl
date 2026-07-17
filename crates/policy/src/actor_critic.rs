@@ -135,7 +135,7 @@ impl<B: Backend> ActorCritic<B> {
         }
     }
 
-    /// Sample actions for a batch of observations. Returns (actions, log_probs, values).
+    /// Sample actions for a batch of observations. Returns (actions, `log_probs`, values).
     ///
     /// Actions are clamped to `[-1, 1]` before the log-prob is computed so the
     /// stored probability matches what the env applies after clamping.
@@ -156,8 +156,7 @@ impl<B: Backend> ActorCritic<B> {
         actions: Tensor<B, 2>,
     ) -> (Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>) {
         let output = self.forward(observations);
-        let log_probs =
-            diagonal_gaussian_log_prob(actions, output.mean, output.log_std.clone());
+        let log_probs = diagonal_gaussian_log_prob(actions, output.mean, output.log_std.clone());
         let values = output.value.reshape([log_probs.dims()[0]]);
         let entropy = diagonal_gaussian_entropy(output.log_std);
         (log_probs, values, entropy)

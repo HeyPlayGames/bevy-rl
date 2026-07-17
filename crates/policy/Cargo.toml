@@ -10,3 +10,6 @@ burn = { workspace = true, default-features = false, features = ["std", "wgpu"] 
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true
