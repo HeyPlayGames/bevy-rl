@@ -40,7 +40,6 @@ impl Plugin for DogPlugin {
             action_dim: DOG_ACTION_DIM,
         })
         .insert_resource(reward_config)
-        .init_resource::<DogSpawnNoise>()
         .add_plugins(DogGroundPlugin)
         .add_systems(
             FixedLast,
@@ -48,9 +47,8 @@ impl Plugin for DogPlugin {
                 write_dog_observations,
                 write_dog_rewards,
                 advance_and_reset_episodes,
-                // Fall resets despawn/respawn via Commands; flush before rewriting
-                // observations so the next policy step sees the post-reset spawn.
-                ApplyDeferred,
+                // Soft resets rewrite poses in-place; refresh obs so the next
+                // policy step sees the post-reset standing state.
                 refresh_dog_observations_after_reset,
             )
                 .chain(),
@@ -180,7 +178,7 @@ fn write_dog_observations(
 }
 
 /// Re-write observations after mid-episode fall resets so the next action uses
-/// the post-respawn state instead of the pre-reset fallen state.
+/// the post-reset standing state instead of the pre-reset fallen state.
 fn refresh_dog_observations_after_reset(
     buffers: ResMut<RlBuffers>,
     roots: Query<(Entity, &CreatureRoot)>,
@@ -221,7 +219,37 @@ fn write_dog_rewards(
     }
 }
 
-/// Despawn and respawn every dog env with spawn-pose noise.
+fn soft_reset_dog_env(
+    commands: &mut Commands,
+    env_id: EnvId,
+    isolation: &EnvIsolationConfig,
+    spawn_noise: &DogSpawnNoise,
+    bodies: &mut Query<(
+        Entity,
+        &SimBody,
+        &CreaturePart,
+        &mut Transform,
+        &mut Position,
+        &mut Rotation,
+        &mut LinearVelocity,
+        &mut AngularVelocity,
+    )>,
+    joint_targets: &mut Query<(&SimJoint, &mut JointTargetAngle)>,
+) {
+    let mut dog = dog_quadruped_desc();
+    apply_dog_spawn_noise(&mut dog, spawn_noise);
+    let world_origin = env_origin(env_id, isolation);
+    soft_reset_creature(
+        commands,
+        env_id,
+        world_origin,
+        &dog,
+        bodies,
+        joint_targets,
+    );
+}
+
+/// Soft-reset every dog env with spawn-pose noise.
 ///
 /// Used by the trainer at the start of each PPO update so rollouts begin
 /// from a fresh randomized standing pose rather than continuing fallen states.
@@ -230,22 +258,28 @@ pub fn reset_all_envs(
     mut buffers: ResMut<RlBuffers>,
     isolation: Res<EnvIsolationConfig>,
     spawn_noise: Res<DogSpawnNoise>,
-    roots: Query<(Entity, &EnvRoot)>,
-    bodies: Query<(Entity, &SimBody)>,
-    joints: Query<(Entity, &SimJoint)>,
+    mut bodies: Query<(
+        Entity,
+        &SimBody,
+        &CreaturePart,
+        &mut Transform,
+        &mut Position,
+        &mut Rotation,
+        &mut LinearVelocity,
+        &mut AngularVelocity,
+    )>,
+    mut joint_targets: Query<(&SimJoint, &mut JointTargetAngle)>,
 ) {
     let env_count = buffers.episode_steps.len();
     for env_index in 0..env_count {
         let env_id = EnvId::new(env_index as u32);
-        reset_env(
+        soft_reset_dog_env(
             &mut commands,
             env_id,
-            &roots,
-            &bodies,
-            &joints,
-            |commands, env_id| {
-                spawn_dog_ground_env(commands, env_id, &isolation, false, &spawn_noise);
-            },
+            &isolation,
+            &spawn_noise,
+            &mut bodies,
+            &mut joint_targets,
         );
         buffers.episode_steps[env_index] = 0;
         buffers.episode_terminated[env_index] = false;
@@ -264,15 +298,37 @@ fn advance_and_reset_episodes(
     config: Res<DogBalanceConfig>,
     isolation: Res<EnvIsolationConfig>,
     spawn_noise: Res<DogSpawnNoise>,
-    roots: Query<(Entity, &EnvRoot)>,
-    creature_roots: Query<(Entity, &CreatureRoot)>,
-    transforms: Query<&Transform>,
-    bodies: Query<(Entity, &SimBody)>,
-    joints: Query<(Entity, &SimJoint)>,
+    mut pose_queries: ParamSet<(
+        Query<(&CreatureRoot, &Transform)>,
+        Query<(
+            Entity,
+            &SimBody,
+            &CreaturePart,
+            &mut Transform,
+            &mut Position,
+            &mut Rotation,
+            &mut LinearVelocity,
+            &mut AngularVelocity,
+        )>,
+    )>,
+    mut joint_targets: Query<(&SimJoint, &mut JointTargetAngle)>,
 ) {
     let env_count = buffers.episode_steps.len();
     if env_count == 0 {
         return;
+    }
+
+    let mut fallen_by_env = vec![false; env_count];
+    for (root, transform) in pose_queries.p0().iter() {
+        let env_index = root.env_id.index() as usize;
+        if env_index >= env_count {
+            continue;
+        }
+        let up = transform.rotation * Vec3::Y;
+        let height = transform.translation.y;
+        if dog_has_fallen(&config, up, height) {
+            fallen_by_env[env_index] = true;
+        }
     }
 
     let horizon = buffers.episode_horizon;
@@ -282,20 +338,9 @@ fn advance_and_reset_episodes(
         buffers.episode_done[env_index] = false;
         buffers.episode_steps[env_index] = buffers.episode_steps[env_index].saturating_add(1);
 
-        let mut fallen = false;
-        for (torso_entity, root) in &creature_roots {
-            if root.env_id.index() as usize != env_index {
-                continue;
-            }
-            if let Ok(transform) = transforms.get(torso_entity) {
-                let up = transform.rotation * Vec3::Y;
-                let height = transform.translation.y;
-                if dog_has_fallen(&config, up, height) {
-                    fallen = true;
-                    buffers.rewards[env_index] += config.fall_penalty;
-                }
-            }
-            break;
+        let fallen = fallen_by_env[env_index];
+        if fallen {
+            buffers.rewards[env_index] += config.fall_penalty;
         }
 
         let timed_out = buffers.episode_steps[env_index] >= horizon;
@@ -322,15 +367,13 @@ fn advance_and_reset_episodes(
         }
 
         let env_id = EnvId::new(env_index as u32);
-        reset_env(
+        soft_reset_dog_env(
             &mut commands,
             env_id,
-            &roots,
-            &bodies,
-            &joints,
-            |commands, env_id| {
-                spawn_dog_ground_env(commands, env_id, &isolation, false, &spawn_noise);
-            },
+            &isolation,
+            &spawn_noise,
+            &mut pose_queries.p1(),
+            &mut joint_targets,
         );
     }
 }

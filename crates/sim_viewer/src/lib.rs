@@ -5,16 +5,19 @@
 
 mod policy_control;
 
+use std::f32::consts::FRAC_PI_2;
+
 use avian3d::prelude::*;
 use bevy::camera::Viewport;
 use bevy::ecs::message::MessageWriter;
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::CascadeShadowConfigBuilder;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 use bevy::ui_widgets::{
-    observe, slider_self_update, Slider, SliderDragState, SliderRange, SliderThumb, SliderValue,
-    TrackClick, ValueChange,
+    observe, slider_self_update, Button, Slider, SliderDragState, SliderRange, SliderThumb,
+    SliderValue, TrackClick, ValueChange,
 };
 use bevy::window::WindowResolution;
 use policy_control::{configure_policy_control, spawn_policy_controls, VIEWER_EPISODE_HORIZON};
@@ -25,6 +28,12 @@ const DEFAULT_ENV_COUNT: usize = 4;
 
 const SLIDER_TRACK: Color = Color::srgb(0.12, 0.13, 0.16);
 const SLIDER_THUMB: Color = Color::srgb(0.35, 0.65, 0.42);
+
+const ORBIT_YAW_SPEED: f32 = 0.005;
+const ORBIT_PITCH_SPEED: f32 = 0.004;
+const ORBIT_PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
+const ORBIT_EYE_OFFSET: Vec3 = Vec3::new(2.4, 1.6, 2.4);
+const ORBIT_TARGET_HEIGHT: f32 = 0.4;
 
 /// Morphology used to build debug meshes for dynamic bodies.
 #[derive(Resource, Clone, Debug)]
@@ -79,25 +88,27 @@ impl Plugin for SimViewerPlugin {
             interpolate_transforms: true,
         });
         configure_policy_control(app);
-        app.add_systems(
-            Startup,
-            (
-                setup_lights,
-                setup_cameras,
-                setup_viewer_ui,
-                setup_debug_meshes,
+        app.init_resource::<OrbitDrag>()
+            .add_systems(
+                Startup,
+                (
+                    setup_lights,
+                    setup_cameras,
+                    setup_viewer_ui,
+                    setup_debug_meshes,
+                )
+                    .chain(),
             )
-                .chain(),
-        )
-        .add_systems(
-            Update,
-            (
-                sync_camera_viewports,
-                sync_env_labels,
-                sync_slider_visuals,
-                attach_debug_meshes,
-            ),
-        );
+            .add_systems(
+                Update,
+                (
+                    sync_camera_viewports,
+                    sync_env_labels,
+                    sync_slider_visuals,
+                    orbit_env_cameras,
+                    attach_debug_meshes,
+                ),
+            );
     }
 }
 
@@ -112,6 +123,16 @@ pub(crate) struct ViewerState {
 #[derive(Component)]
 struct EnvCamera {
     slot: usize,
+    yaw: f32,
+    pitch: f32,
+    radius: f32,
+    center: Vec3,
+}
+
+#[derive(Resource, Default)]
+struct OrbitDrag {
+    /// Slot locked for the current drag; kept even if the cursor leaves that viewport.
+    active_slot: Option<usize>,
 }
 
 #[derive(Component)]
@@ -158,8 +179,10 @@ fn setup_cameras(mut commands: Commands, isolation: Res<EnvIsolationConfig>) {
 
     for slot in 0..MAX_VIEW_COUNT {
         let env_id = EnvId::new(slot as u32);
-        let target = env_origin(env_id, &isolation) + Vec3::new(0.0, 0.4, 0.0);
-        let eye = target + Vec3::new(2.4, 1.6, 2.4);
+        let center = env_origin(env_id, &isolation) + Vec3::new(0.0, ORBIT_TARGET_HEIGHT, 0.0);
+        let eye = center + ORBIT_EYE_OFFSET;
+        let transform = Transform::from_translation(eye).looking_at(center, Vec3::Y);
+        let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
         commands.spawn((
             Camera3d::default(),
             Camera {
@@ -172,8 +195,14 @@ fn setup_cameras(mut commands: Commands, isolation: Res<EnvIsolationConfig>) {
                 },
                 ..default()
             },
-            EnvCamera { slot },
-            Transform::from_translation(eye).looking_at(target, Vec3::Y),
+            EnvCamera {
+                slot,
+                yaw,
+                pitch,
+                radius: ORBIT_EYE_OFFSET.length(),
+                center,
+            },
+            transform,
         ));
     }
 }
@@ -364,6 +393,94 @@ fn viewport_layout(
         UVec2::new(column * cell_width, row * cell_height),
         UVec2::new(cell_width, cell_height),
     ))
+}
+
+fn viewport_slot_at(
+    view_count: usize,
+    width: u32,
+    height: u32,
+    physical_cursor: Vec2,
+) -> Option<usize> {
+    for slot in 0..view_count {
+        let Some((position, size)) = viewport_layout(view_count, width, height, slot) else {
+            continue;
+        };
+        let min_x = position.x as f32;
+        let min_y = position.y as f32;
+        let max_x = min_x + size.x as f32;
+        let max_y = min_y + size.y as f32;
+        if physical_cursor.x >= min_x
+            && physical_cursor.x < max_x
+            && physical_cursor.y >= min_y
+            && physical_cursor.y < max_y
+        {
+            return Some(slot);
+        }
+    }
+    None
+}
+
+fn apply_orbit_transform(transform: &mut Transform, camera: &EnvCamera) {
+    transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+    transform.translation = camera.center - *transform.forward() * camera.radius;
+}
+
+fn orbit_env_cameras(
+    mut drag: ResMut<OrbitDrag>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    state: Res<ViewerState>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    ui_hovered: Query<&Hovered, Or<(With<Slider>, With<Button>)>>,
+    mut cameras: Query<(&mut EnvCamera, &mut Transform)>,
+) {
+    if mouse_buttons.just_released(MouseButton::Left) {
+        drag.active_slot = None;
+    } else if !mouse_buttons.pressed(MouseButton::Left) {
+        drag.active_slot = None;
+    } else if mouse_buttons.just_pressed(MouseButton::Left) {
+        let ui_blocking = ui_hovered.iter().any(|hovered| hovered.0);
+        if !ui_blocking {
+            let Ok(window) = windows.single() else {
+                return;
+            };
+            let Some(cursor) = window.cursor_position() else {
+                return;
+            };
+            let scale = window.scale_factor().max(0.0001);
+            let physical_cursor = cursor * scale;
+            drag.active_slot = viewport_slot_at(
+                state.env_count,
+                window.physical_width(),
+                window.physical_height(),
+                physical_cursor,
+            );
+        }
+    }
+
+    let Some(active_slot) = drag.active_slot else {
+        return;
+    };
+
+    if !mouse_buttons.pressed(MouseButton::Left) {
+        return;
+    }
+
+    let delta = mouse_motion.delta;
+    if delta == Vec2::ZERO {
+        return;
+    }
+
+    for (mut env_camera, mut transform) in &mut cameras {
+        if env_camera.slot != active_slot {
+            continue;
+        }
+        env_camera.yaw -= delta.x * ORBIT_YAW_SPEED;
+        env_camera.pitch = (env_camera.pitch - delta.y * ORBIT_PITCH_SPEED)
+            .clamp(-ORBIT_PITCH_LIMIT, ORBIT_PITCH_LIMIT);
+        apply_orbit_transform(&mut transform, &env_camera);
+        break;
+    }
 }
 
 fn sync_camera_viewports(

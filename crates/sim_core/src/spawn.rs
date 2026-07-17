@@ -4,11 +4,18 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_transform_interpolation::prelude::TransformInterpolation;
 
+use crate::control::JointTargetAngle;
 use crate::creature::{BodyDesc, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind};
 use crate::env::{
     env_creature_collision_layers, env_origin, EnvId, EnvIsolationConfig, EnvRoot, SimBody,
     SimJoint,
 };
+
+/// Stable body name for soft resets (maps a spawned entity back to [`BodyDesc::name`]).
+#[derive(Component, Clone, Debug)]
+pub struct CreaturePart {
+    pub name: String,
+}
 
 /// Spawns an empty env root marker at the isolated world origin.
 pub fn spawn_env_root(
@@ -82,6 +89,9 @@ fn spawn_body(
     let mut entity_commands = commands.spawn((
         Name::new(format!("{}_{}", body.name, env_id.index())),
         SimBody { env_id },
+        CreaturePart {
+            name: body.name.clone(),
+        },
         RigidBody::Dynamic,
         collider,
         ColliderDensity(body.density),
@@ -204,19 +214,66 @@ pub fn despawn_env(
     }
 }
 
-/// Convenience: despawn then invoke `respawn` closure.
-pub fn reset_env<F>(
+/// Cheap reset: teleport creature bodies to `creature` poses and zero velocities.
+///
+/// Keeps entities, colliders, and joints. Skips ground / non-[`CreaturePart`] bodies.
+/// Callers should rebuild `creature` with any spawn-pose randomization first.
+pub fn soft_reset_creature(
     commands: &mut Commands,
     env_id: EnvId,
-    roots: &Query<(Entity, &EnvRoot)>,
-    bodies: &Query<(Entity, &SimBody)>,
-    joints: &Query<(Entity, &SimJoint)>,
-    respawn: F,
-) where
-    F: FnOnce(&mut Commands, EnvId),
-{
-    despawn_env(commands, env_id, roots, bodies, joints);
-    respawn(commands, env_id);
+    world_origin: Vec3,
+    creature: &CreatureDesc,
+    bodies: &mut Query<(
+        Entity,
+        &SimBody,
+        &CreaturePart,
+        &mut Transform,
+        &mut Position,
+        &mut Rotation,
+        &mut LinearVelocity,
+        &mut AngularVelocity,
+    )>,
+    joint_targets: &mut Query<(&SimJoint, &mut JointTargetAngle)>,
+) {
+    let mut pose_by_name = HashMap::with_capacity(creature.bodies.len());
+    for body in &creature.bodies {
+        pose_by_name.insert(body.name.as_str(), body.pose);
+    }
+
+    for (
+        entity,
+        sim_body,
+        part,
+        mut transform,
+        mut position,
+        mut rotation,
+        mut linear_velocity,
+        mut angular_velocity,
+    ) in bodies.iter_mut()
+    {
+        if sim_body.env_id != env_id {
+            continue;
+        }
+        let Some(pose) = pose_by_name.get(part.name.as_str()) else {
+            continue;
+        };
+
+        let translation = world_origin + pose.translation;
+        let orientation = pose.rotation.normalize();
+        transform.translation = translation;
+        transform.rotation = orientation;
+        position.0 = translation;
+        *rotation = Rotation::from(orientation);
+        linear_velocity.0 = Vec3::ZERO;
+        angular_velocity.0 = Vec3::ZERO;
+        commands.entity(entity).remove::<Sleeping>();
+    }
+
+    for (sim_joint, mut target) in joint_targets.iter_mut() {
+        if sim_joint.env_id == env_id {
+            target.0 = 0.0;
+        }
+    }
 }
 
 /// Mesh-friendly sizes for debug rendering of a body shape.

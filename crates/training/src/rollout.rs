@@ -45,9 +45,7 @@ impl RolloutBatch {
         step: usize,
         observations: &[Vec<f32>],
         actions: &[Vec<f32>],
-        log_probs: &[f32],
         rewards: &[f32],
-        values: &[f32],
         terminations: &[bool],
         truncations: &[bool],
     ) {
@@ -59,12 +57,19 @@ impl RolloutBatch {
                 .copy_from_slice(&observations[env_index]);
             self.actions[action_offset..action_offset + self.action_dim]
                 .copy_from_slice(&actions[env_index]);
-            self.log_probs[flat] = log_probs[env_index];
             self.rewards[flat] = rewards[env_index];
-            self.values[flat] = values[env_index];
             self.terminations[flat] = if terminations[env_index] { 1.0 } else { 0.0 };
             self.truncations[flat] = if truncations[env_index] { 1.0 } else { 0.0 };
         }
+    }
+
+    /// Fill policy outputs after a deferred GPU→CPU sync (flat `[step * env + env]` layout).
+    pub fn fill_policy_outputs(&mut self, log_probs: &[f32], values: &[f32]) {
+        let transition_count = self.transition_count();
+        let log_prob_count = log_probs.len().min(transition_count);
+        let value_count = values.len().min(transition_count);
+        self.log_probs[..log_prob_count].copy_from_slice(&log_probs[..log_prob_count]);
+        self.values[..value_count].copy_from_slice(&values[..value_count]);
     }
 
     pub fn transition_count(&self) -> usize {

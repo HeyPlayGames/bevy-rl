@@ -39,7 +39,8 @@ pub use rl::{
     EpisodeResetPolicy, RespawnAllEnvs, RlBuffers, SpawnEnvBatch,
 };
 pub use spawn::{
-    debug_mesh_for_shape, despawn_env, reset_env, spawn_creature, spawn_env_root, DebugMeshKind,
+    debug_mesh_for_shape, despawn_env, soft_reset_creature, spawn_creature, spawn_env_root,
+    CreaturePart, DebugMeshKind,
 };
 
 pub mod prelude {
@@ -47,13 +48,14 @@ pub mod prelude {
         apply_buffered_actions, apply_joint_targets, apply_revolute_angles,
         build_headless_batch_app, configure_control_systems, configure_headless_app, despawn_env,
         env_creature_collision_layers, env_origin, env_world_collision_layers, ground_half_extents,
-        reset_env, revolute_angle, revolute_angular_velocity, spawn_creature, spawn_env_root,
-        spawn_flat_ground, transform_creature_poses, ActuatedRevolute, BodyDesc, BodyShape,
-        ControlSystems, CreatureDesc, CreatureInstance, CreatureRoot, CreatureSpec, EnvId,
-        EnvIsolationConfig, EnvRoot, FlatGround, EpisodeResetPolicy, HeadlessBatchConfig,
-        HeadlessSimConfig, JointDesc, JointKind, JointTargetAngle, PoseDesc, JsonConfigError,
-        RespawnAllEnvs, RlBuffers, SimBody, SimCorePlugin, SimJoint, SimTick, SpawnEnvBatch,
-        GROUND_HALF_THICKNESS, load_json_config, load_json_config_or_default, save_json_config,
+        revolute_angle, revolute_angular_velocity, soft_reset_creature, spawn_creature,
+        spawn_env_root, spawn_flat_ground, transform_creature_poses, ActuatedRevolute, BodyDesc,
+        BodyShape, ControlSystems, CreatureDesc, CreatureInstance, CreaturePart, CreatureRoot,
+        CreatureSpec, EnvId, EnvIsolationConfig, EnvRoot, FlatGround, EpisodeResetPolicy,
+        HeadlessBatchConfig, HeadlessSimConfig, JointDesc, JointKind, JointTargetAngle, PoseDesc,
+        JsonConfigError, RespawnAllEnvs, RlBuffers, SimBody, SimCorePlugin, SimJoint, SimTick,
+        SpawnEnvBatch, GROUND_HALF_THICKNESS, load_json_config, load_json_config_or_default,
+        save_json_config,
     };
     pub use avian3d::prelude::*;
     pub use bevy::prelude::{

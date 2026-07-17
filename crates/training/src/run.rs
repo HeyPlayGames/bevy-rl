@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use burn::{
     backend::{Autodiff, Wgpu},
     module::AutodiffModule,
-    tensor::Tensor,
+    tensor::{Transaction, Tensor},
 };
 use policy::{
     load_policy_checkpoint, save_creature_checkpoint, ActorCritic, ActorCriticArchConfig,
@@ -66,7 +66,7 @@ impl Default for PpoTrainConfig {
 /// Run PPO training against a creature pack already registered via `add_plugins`.
 ///
 /// `reset_all_envs` is called at the start of each update so rollouts begin from
-/// a consistent spawn (typically a pack-provided despawn+respawn system).
+/// a consistent spawn (typically a pack-provided soft-reset system).
 pub fn run_ppo(
     config: PpoTrainConfig,
     add_plugins: impl FnOnce(&mut App),
@@ -191,7 +191,7 @@ pub fn run_ppo(
             eprintln!("failed to reset envs before update {update_index}: {error}");
             std::process::exit(1);
         }
-        // Apply respawns, then clear episode counters so the horizon run is clean.
+        // Apply resets, then clear episode counters so the horizon run is clean.
         app.update();
         {
             let mut buffers = app.world_mut().resource_mut::<RlBuffers>();
@@ -205,8 +205,12 @@ pub fn run_ppo(
 
         let mut rollout =
             RolloutBatch::new(env_count, episode_horizon, observation_dim, action_dim);
-        let mut step_log_probs = vec![0.0; env_count];
-        let mut step_values = vec![0.0; env_count];
+        // Rollout inference skips Autodiff; only actions sync each step (Bevy needs them).
+        // Log-probs / values stay on device and download once after the horizon.
+        let inference_model = model.valid();
+        let mut pending_log_probs =
+            Vec::with_capacity(episode_horizon);
+        let mut pending_values = Vec::with_capacity(episode_horizon);
 
         for step in 0..episode_horizon {
             let observations = {
@@ -216,16 +220,28 @@ pub fn run_ppo(
 
             let flat: Vec<f32> = observations.iter().flatten().copied().collect();
             let observation_tensor =
-                Tensor::<TrainBackend, 1>::from_floats(flat.as_slice(), &device)
+                Tensor::<InferenceBackend, 1>::from_floats(flat.as_slice(), &device)
                     .reshape([env_count, observation_dim]);
 
-            let (actions_tensor, log_probs_tensor, values_tensor) = model.act(observation_tensor);
-            let action_values = actions_tensor.to_data().to_vec::<f32>().unwrap_or_default();
-            let log_prob_values = log_probs_tensor
-                .to_data()
-                .to_vec::<f32>()
-                .unwrap_or_default();
-            let value_values = values_tensor.to_data().to_vec::<f32>().unwrap_or_default();
+            let (actions_tensor, log_probs_tensor, values_tensor) =
+                inference_model.act(observation_tensor);
+            pending_log_probs.push(log_probs_tensor);
+            pending_values.push(values_tensor);
+
+            let action_values = match Transaction::<InferenceBackend>::default()
+                .register(actions_tensor)
+                .try_execute()
+            {
+                Ok(data) => data
+                    .into_iter()
+                    .next()
+                    .and_then(|tensor_data| tensor_data.to_vec::<f32>().ok())
+                    .unwrap_or_default(),
+                Err(error) => {
+                    eprintln!("failed to read actions at step {step}: {error}");
+                    std::process::exit(1);
+                }
+            };
 
             let stored_actions = {
                 let world = app.world_mut();
@@ -236,9 +252,6 @@ pub fn run_ppo(
                         buffers.actions[env_index]
                             .copy_from_slice(&action_values[offset..offset + action_dim]);
                     }
-                    step_log_probs[env_index] =
-                        log_prob_values.get(env_index).copied().unwrap_or(0.0);
-                    step_values[env_index] = value_values.get(env_index).copied().unwrap_or(0.0);
                 }
                 buffers.actions.clone()
             };
@@ -259,31 +272,58 @@ pub fn run_ppo(
                 step,
                 &observations,
                 &stored_actions,
-                &step_log_probs,
                 &rewards,
-                &step_values,
                 &terminations,
                 &truncations,
             );
         }
 
-        let last_values = {
+        let last_values_tensor = {
             let observations = {
                 let world = app.world();
                 world.resource::<RlBuffers>().observations.clone()
             };
             let flat: Vec<f32> = observations.iter().flatten().copied().collect();
             let observation_tensor =
-                Tensor::<TrainBackend, 1>::from_floats(flat.as_slice(), &device)
+                Tensor::<InferenceBackend, 1>::from_floats(flat.as_slice(), &device)
                     .reshape([env_count, observation_dim]);
-            let output = model.forward(observation_tensor);
-            output
+            inference_model
+                .forward(observation_tensor)
                 .value
                 .reshape([env_count])
-                .to_data()
-                .to_vec::<f32>()
-                .unwrap_or_else(|_| vec![0.0; env_count])
         };
+
+        let log_probs_tensor = Tensor::cat(pending_log_probs, 0);
+        let values_tensor = Tensor::cat(pending_values, 0);
+        let (log_prob_values, value_values, last_values) =
+            match Transaction::<InferenceBackend>::default()
+                .register(log_probs_tensor)
+                .register(values_tensor)
+                .register(last_values_tensor)
+                .try_execute()
+            {
+                Ok(data) => {
+                    let mut data = data.into_iter();
+                    let log_probs = data
+                        .next()
+                        .and_then(|tensor_data| tensor_data.to_vec::<f32>().ok())
+                        .unwrap_or_default();
+                    let values = data
+                        .next()
+                        .and_then(|tensor_data| tensor_data.to_vec::<f32>().ok())
+                        .unwrap_or_default();
+                    let bootstrap = data
+                        .next()
+                        .and_then(|tensor_data| tensor_data.to_vec::<f32>().ok())
+                        .unwrap_or_else(|| vec![0.0; env_count]);
+                    (log_probs, values, bootstrap)
+                }
+                Err(error) => {
+                    eprintln!("failed to read rollout policy outputs: {error}");
+                    std::process::exit(1);
+                }
+            };
+        rollout.fill_policy_outputs(&log_prob_values, &value_values);
 
         let (updated_model, updated_optimizer, loss) = ppo_update(
             model,

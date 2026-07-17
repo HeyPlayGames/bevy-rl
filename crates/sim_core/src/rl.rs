@@ -40,7 +40,7 @@ pub enum ControlSystems {
     ApplyActions,
 }
 
-/// Controls whether time-limit truncations despawn/respawn the env.
+/// Controls whether time-limit truncations reset the env.
 ///
 /// Trainers should disable this so the final observation stays valid for
 /// value bootstrapping. Viewers/headless can leave the default (`true`) so
