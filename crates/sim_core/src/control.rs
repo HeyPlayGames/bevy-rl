@@ -136,18 +136,4 @@ pub mod reward {
         let tolerance = tolerance.max(1e-4);
         1.0 - ((height - target).abs() / tolerance).min(1.0)
     }
-
-    /// Mean squared action magnitude in `[0, 1]` for normalized actions.
-    pub fn action_l2(actions: &[f32]) -> f32 {
-        if actions.is_empty() {
-            return 0.0;
-        }
-        actions.iter().map(|value| value * value).sum::<f32>() / actions.len() as f32
-    }
-
-    /// Soft penalty on angular speed.
-    pub fn angular_velocity_penalty(angular_velocity: Vec3, scale: f32) -> f32 {
-        let scale = scale.max(1e-4);
-        (angular_velocity.length() / scale).min(1.0)
-    }
 }

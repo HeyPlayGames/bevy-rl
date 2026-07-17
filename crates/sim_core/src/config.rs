@@ -1,4 +1,4 @@
-//! Shared JSON config load/save for runtime-tunable parameters.
+//! Shared JSON config loading for runtime-tunable parameters.
 //!
 //! Creature packs and training tools can keep reward / hyperparameter knobs in
 //! `.json` files and edit them without recompiling.
@@ -8,17 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 
-/// Error loading or writing a JSON config file.
+/// Error loading a JSON config file.
 #[derive(Debug)]
 pub enum JsonConfigError {
     Io(io::Error),
     Parse {
-        path: PathBuf,
-        source: serde_json::Error,
-    },
-    Write {
         path: PathBuf,
         source: serde_json::Error,
     },
@@ -35,13 +31,6 @@ impl std::fmt::Display for JsonConfigError {
                     path.display()
                 )
             }
-            Self::Write { path, source } => {
-                write!(
-                    formatter,
-                    "failed to serialize config {}: {source}",
-                    path.display()
-                )
-            }
         }
     }
 }
@@ -50,7 +39,7 @@ impl std::error::Error for JsonConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::Parse { source, .. } | Self::Write { source, .. } => Some(source),
+            Self::Parse { source, .. } => Some(source),
         }
     }
 }
@@ -87,21 +76,4 @@ pub fn load_json_config_or_default<T: DeserializeOwned + Default>(
         }
         Err(error) => Err(error),
     }
-}
-
-/// Write a typed config as pretty JSON, creating parent directories as needed.
-pub fn save_json_config<T: Serialize>(
-    path: impl AsRef<Path>,
-    value: &T,
-) -> Result<(), JsonConfigError> {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let text = serde_json::to_string_pretty(value).map_err(|source| JsonConfigError::Write {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    fs::write(path, text)?;
-    Ok(())
 }

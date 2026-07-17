@@ -10,7 +10,7 @@ Bevy-rl ships **crates** (sim, policy, training, viewer). Entry points for train
 
 | Crate | Role |
 | --- | --- |
-| `sim_core` | Physics core: env isolation, creature articulations, torque actuation, shared `RlBuffers` / `CreatureSpec` contract |
+| `sim_core` | Physics core: env isolation, creature articulations, joint target actuation, shared `RlBuffers` / `CreatureSpec` contract |
 | `policy` | Burn actor-critic + checkpoints (keyed by creature id) |
 | `training` | PPO / GAE / rollout / train dashboard + `run_ppo` helper |
 | `sim_viewer` | Generic multi-view client (`run_viewer`) — compose with a creature pack |
@@ -25,7 +25,7 @@ A pack plugs into the helpers by providing:
 3. **Step systems** — fill `RlBuffers` observations & rewards; mark `ActuatedRevolute` joints  
 4. **Optional** — `ViewerCreatureVisuals` for debug meshes  
 
-Action → torque is handled by `sim_core` (`ControlSystems::ApplyActions`).
+Action → joint target is handled by `sim_core` (`ControlSystems::ApplyActions`).
 
 ## Run (dog example)
 
@@ -72,7 +72,7 @@ During training, Burn's terminal UI shows live **Loss**, **Mean Reward**, and **
 
 ## Design notes
 
-- Sims tick at 60 Hz; control is lockstep with physics (torque on revolute joints).
-- Dog (example) observations: projected gravity, root lin/ang vel, joint angles + ang vels (33-D).
-- Dog actions: 12 normalized joint torques.
-- Episodes are fixed-horizon; balance reward is soft (upright + height − spin − torque).
+- Sims tick at 60 Hz; control is lockstep with physics (joint motor targets on revolutes).
+- Dog (example) observations: projected gravity, root lin/ang vel, joint angles + ang vels, height, previous actions (46-D).
+- Dog actions: 12 normalized joint target angles.
+- Episodes are fixed-horizon; balance reward is soft (upright + height), with a fall penalty on terminal steps.

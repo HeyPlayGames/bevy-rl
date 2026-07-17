@@ -56,12 +56,6 @@ impl Plugin for DogPlugin {
     }
 }
 
-/// Tags a dog agent root for env-scoped RL bookkeeping.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct DogAgent {
-    pub env_id: EnvId,
-}
-
 pub fn attach_dog_actuation(commands: &mut Commands, instance: &CreatureInstance) {
     for (action_index, joint_name) in actuated_joint_names().iter().enumerate() {
         let Some(&joint_entity) = instance.joints.get(*joint_name) else {
@@ -80,7 +74,6 @@ pub fn attach_dog_actuation(commands: &mut Commands, instance: &CreatureInstance
 }
 
 pub fn mark_dog_root(commands: &mut Commands, env_id: EnvId, instance: &CreatureInstance) {
-    commands.entity(instance.root).insert(DogAgent { env_id });
     if let Some(&torso) = instance.bodies.get("torso") {
         commands.entity(torso).insert(CreatureRoot { env_id });
     }

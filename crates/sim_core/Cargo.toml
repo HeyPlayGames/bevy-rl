@@ -16,4 +16,3 @@ avian3d = { workspace = true }
 bevy_transform_interpolation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ron = { workspace = true }

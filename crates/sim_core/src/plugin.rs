@@ -90,59 +90,6 @@ pub fn configure_headless_app(app: &mut App, config: &HeadlessSimConfig) {
     }
 }
 
-/// Batch headless run: env count, tick budget, and sim core isolation.
-#[derive(Clone, Debug)]
-pub struct HeadlessBatchConfig {
-    pub env_count: u32,
-    pub max_ticks: Option<u64>,
-    pub fixed_hz: f64,
-    pub isolation: EnvIsolationConfig,
-    pub gravity: Vec3,
-    pub interpolate: bool,
-}
-
-impl Default for HeadlessBatchConfig {
-    fn default() -> Self {
-        Self {
-            env_count: 16,
-            max_ticks: Some(600),
-            fixed_hz: 60.0,
-            isolation: EnvIsolationConfig {
-                spacing: 40.0,
-                grid_columns: 16,
-            },
-            gravity: Vec3::NEG_Y * 9.81,
-            interpolate: false,
-        }
-    }
-}
-
-/// Build a headless physics app shell. Callers add a creature/env pack, then `App::run`.
-pub fn build_headless_batch_app(config: &HeadlessBatchConfig) -> App {
-    let headless = HeadlessSimConfig {
-        fixed_hz: config.fixed_hz,
-        runner_wait: Duration::ZERO,
-        max_ticks: config.max_ticks,
-    };
-
-    let mut app = App::new();
-    configure_headless_app(&mut app, &headless);
-
-    app.add_plugins(avian3d::prelude::PhysicsPlugins::default())
-        .add_plugins(SimCorePlugin {
-            fixed_hz: headless.fixed_hz,
-            isolation: config.isolation.clone(),
-            interpolate_transforms: config.interpolate,
-        })
-        .insert_resource(avian3d::prelude::Gravity(config.gravity))
-        .insert_resource(crate::rl::SpawnEnvBatch {
-            count: config.env_count,
-            interpolate: config.interpolate,
-        });
-
-    app
-}
-
 #[derive(Resource, Clone, Copy)]
 struct MaxTicks(u64);
 

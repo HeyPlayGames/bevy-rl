@@ -275,21 +275,3 @@ pub fn soft_reset_creature(
         }
     }
 }
-
-/// Mesh-friendly sizes for debug rendering of a body shape.
-pub fn debug_mesh_for_shape(shape: BodyShape) -> DebugMeshKind {
-    match shape {
-        BodyShape::Capsule { radius, length } => DebugMeshKind::Capsule { radius, length },
-        BodyShape::Cylinder { radius, height } => DebugMeshKind::Cylinder { radius, height },
-        BodyShape::Cuboid { half_extents } => DebugMeshKind::Cuboid { half_extents },
-        BodyShape::Sphere { radius } => DebugMeshKind::Sphere { radius },
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum DebugMeshKind {
-    Capsule { radius: f32, length: f32 },
-    Cylinder { radius: f32, height: f32 },
-    Cuboid { half_extents: Vec3 },
-    Sphere { radius: f32 },
-}
