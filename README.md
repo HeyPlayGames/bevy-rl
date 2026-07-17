@@ -1,33 +1,78 @@
-# sim_batch
+# bevy-rl
 
-Parallel headless physics simulation environments on Bevy 0.19 + Avian 3D.
+Infrastructure for training RL agents in parallel Bevy + Avian physics sims (Burn PPO).
 
-Many env instances share one Avian world, isolated by spatial separation and collision layers. A viewer can watch ~4 envs with transform interpolation between fixed ticks.
+Many env instances share one Avian world, isolated by spatial separation and collision layers. Policies are trained with PPO (Burn wgpu) and can run in-sim via the viewer.
 
-## Crates
+Bevy-rl ships **crates** (sim, policy, training, viewer). Entry points for train / view live in example packs — start with [`examples/dog`](examples/dog).
+
+## Workspace layout
 
 | Crate | Role |
 | --- | --- |
-| `sim_core` | Fixed timestep, `EnvId`, isolation layers, creature articulation format + spawner |
-| `sim_envs` | Concrete envs (flat ground + dog-like quadruped) |
-| `sim_viewer` | Windowed multi-view client |
-| `sim_headless` | Throughput-first batch runner |
-| `sim_viewer` (bin) | Opens the viewer |
+| `sim_core` | Physics core: env isolation, creature articulations, torque actuation, shared `RlBuffers` / `CreatureSpec` contract |
+| `policy` | Burn actor-critic + checkpoints (keyed by creature id) |
+| `training` | PPO / GAE / rollout / train dashboard + `run_ppo` helper |
+| `sim_viewer` | Generic multi-view client (`run_viewer`) — compose with a creature pack |
+| `examples/dog` | **Example pack** — quadruped balance + `dog_train` / `dog_view` binaries |
 
-## Run
+### Creature pack contract
+
+A pack plugs into the helpers by providing:
+
+1. **`CreatureSpec`** — id, observation dim, action dim  
+2. **Spawn** — honor `SpawnEnvBatch` / `RespawnAllEnvs` (flat ground helper: `spawn_flat_ground`)  
+3. **Step systems** — fill `RlBuffers` observations & rewards; mark `ActuatedRevolute` joints  
+4. **Optional** — `ViewerCreatureVisuals` for debug meshes  
+
+Action → torque is handled by `sim_core` (`ControlSystems::ApplyActions`).
+
+## Run (dog example)
 
 ```bash
-# 16 envs, 600 fixed ticks, as fast as possible
-cargo run -p sim_headless -- 16 600
+# Watch envs (pick a policy in the UI to drive them)
+cargo run -p dog_view
 
-# Watch envs 0–3 (8 total simulated)
-cargo run -p sim_viewer_bin
+# PPO training — Burn TUI shows loss / mean reward
+cargo run -p dog_train -- 16 50
+
+# Resume from latest AppData checkpoint
+cargo run -p dog_train -- 16 50 --load
+
+# Resume from an explicit checkpoint stem or directory
+cargo run -p dog_train -- 16 50 --load "%APPDATA%/bevy-rl/checkpoints/dog/latest"
 ```
+
+### Viewer policy
+
+In the viewer controls panel:
+
+1. Click **Policy…** and choose a checkpoint (`.mpk` or `.json`). The dialog opens in the creature’s checkpoint folder when it exists (or can be created).
+2. Creatures are driven each physics tick with the policy’s deterministic mean actions (shared weights across all visible envs).
+3. Click **Clear** to unload the policy and return to zero torque.
+
+Dim / creature mismatches log loudly and leave the policy unloaded.
+
+## Checkpoints
+
+Trainer saves once at the end of the run (or after an early TUI stop) to the OS app data directory (not the repo):
+
+- Windows: `%APPDATA%\bevy-rl\checkpoints\dog\`
+- macOS: `~/Library/Application Support/bevy-rl/checkpoints/dog/`
+- Linux: `~/.local/share/bevy-rl/checkpoints/dog/`
+
+Each save writes inference-ready weights (`.mpk`) plus JSON metadata:
+
+- `latest.mpk` / `latest.json`
+- `step_000042.mpk` / `step_000042.json` (final update index)
+
+Metadata includes creature id, obs/action/hidden dims, update index, and mean reward. Load fails if dims do not match.
+
+During training, Burn's terminal UI shows live **Loss**, **Mean Reward**, and **Mean Episode Return** graphs (arrow keys switch metrics / plot types; `q` then `s` stops cleanly and still saves).
 
 ## Design notes
 
-- Sims tick in `FixedPostUpdate` (Avian default) at 60 Hz.
-- Headless uses `TimeUpdateStrategy::ManualDuration` so wall clock does not throttle throughput.
-- Isolation: env origins on a grid (`spacing` default 40) + paired `CollisionLayers` (`env_id % 15`) so creatures hit world geometry but not themselves.
-- Creatures are physics-first articulations (capsules/cuboids + revolute/spherical joints). Visuals are debug meshes matching colliders.
-- Viewer: 2×2 cameras with viewports + `TransformInterpolation` on dynamic bodies (render rate ≠ sim rate).
+- Sims tick at 60 Hz; control is lockstep with physics (torque on revolute joints).
+- Dog (example) observations: projected gravity, root lin/ang vel, joint angles + ang vels (33-D).
+- Dog actions: 12 normalized joint torques.
+- Episodes are fixed-horizon; balance reward is soft (upright + height − spin − torque).

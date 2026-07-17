@@ -2,12 +2,19 @@
 resolver = "2"
 members = [
     "crates/sim_core",
-    "crates/sim_envs",
+    "crates/policy",
+    "crates/training",
     "crates/sim_viewer",
-    "bins/headless",
-    "bins/viewer",
+    "examples/dog",
+    "examples/dog/bins/train",
+    "examples/dog/bins/view",
 ]
-default-members = ["bins/headless", "bins/viewer"]
+default-members = [
+    "crates/sim_core",
+    "crates/policy",
+    "crates/training",
+    "crates/sim_viewer",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,9 +32,15 @@ avian3d = { version = "0.7", default-features = false, features = [
 ] }
 bevy_transform_interpolation = "0.5"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
 ron = "0.12"
+rfd = "0.17.2"
+rand = "0.10"
+burn = { version = "0.21", default-features = false }
 sim_core = { path = "crates/sim_core" }
-sim_envs = { path = "crates/sim_envs" }
+policy = { path = "crates/policy" }
+training = { path = "crates/training" }
 sim_viewer = { path = "crates/sim_viewer" }
 
 [profile.dev]

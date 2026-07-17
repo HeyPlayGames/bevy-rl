@@ -1,14 +1,15 @@
 [package]
-name = "sim_viewer_bin"
+name = "dog_view"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Viewer binary: watch ~4 envs with transform interpolation"
+description = "Dog example: multi-view viewer binary"
 
 [[bin]]
-name = "sim_viewer"
+name = "dog_view"
 path = "src/main.rs"
 
 [dependencies]
 bevy = { workspace = true, default-features = true }
+dog = { path = "../.." }
 sim_viewer = { workspace = true }

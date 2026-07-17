@@ -9,5 +9,7 @@ description = "Windowed multi-view client for watching parallel sim environments
 bevy = { workspace = true, default-features = true }
 avian3d = { workspace = true }
 bevy_transform_interpolation = { workspace = true }
+burn = { workspace = true, default-features = false, features = ["std", "wgpu"] }
 sim_core = { workspace = true }
-sim_envs = { workspace = true }
+policy = { workspace = true }
+rfd = { workspace = true }

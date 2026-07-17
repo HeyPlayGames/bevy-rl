@@ -55,11 +55,15 @@ impl Plugin for SimCorePlugin {
         app.insert_resource(self.isolation.clone())
             .insert_resource(Time::<Fixed>::from_hz(self.fixed_hz))
             .init_resource::<SimTick>()
+            .init_resource::<crate::rl::RlBuffers>()
+            .init_resource::<crate::rl::EpisodeResetPolicy>()
+            .add_message::<crate::rl::RespawnAllEnvs>()
+            .add_systems(FixedUpdate, crate::control::apply_joint_targets)
             .add_systems(FixedLast, bump_sim_tick);
 
-        if self.interpolate_transforms
-            && !app.is_plugin_added::<TransformInterpolationPlugin>()
-        {
+        crate::rl::configure_control_systems(app);
+
+        if self.interpolate_transforms && !app.is_plugin_added::<TransformInterpolationPlugin>() {
             app.add_plugins(TransformInterpolationPlugin::default());
         }
     }
@@ -75,12 +79,10 @@ fn bump_sim_tick(mut tick: ResMut<SimTick>) {
 /// fixed step regardless of wall clock — throughput-first when `runner_wait` is zero.
 pub fn configure_headless_app(app: &mut App, config: &HeadlessSimConfig) {
     let step = Duration::from_secs_f64(1.0 / config.fixed_hz);
-    app.add_plugins(
-        MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(config.runner_wait)),
-    )
-    .add_plugins(TransformPlugin)
-    .insert_resource(Time::<Fixed>::from_hz(config.fixed_hz))
-    .insert_resource(TimeUpdateStrategy::ManualDuration(step));
+    app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(config.runner_wait)))
+        .add_plugins(TransformPlugin)
+        .insert_resource(Time::<Fixed>::from_hz(config.fixed_hz))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(step));
 
     if let Some(max_ticks) = config.max_ticks {
         app.insert_resource(MaxTicks(max_ticks))
@@ -88,10 +90,67 @@ pub fn configure_headless_app(app: &mut App, config: &HeadlessSimConfig) {
     }
 }
 
+/// Batch headless run: env count, tick budget, and sim core isolation.
+#[derive(Clone, Debug)]
+pub struct HeadlessBatchConfig {
+    pub env_count: u32,
+    pub max_ticks: Option<u64>,
+    pub fixed_hz: f64,
+    pub isolation: EnvIsolationConfig,
+    pub gravity: Vec3,
+    pub interpolate: bool,
+}
+
+impl Default for HeadlessBatchConfig {
+    fn default() -> Self {
+        Self {
+            env_count: 16,
+            max_ticks: Some(600),
+            fixed_hz: 60.0,
+            isolation: EnvIsolationConfig {
+                spacing: 40.0,
+                grid_columns: 16,
+            },
+            gravity: Vec3::NEG_Y * 9.81,
+            interpolate: false,
+        }
+    }
+}
+
+/// Build a headless physics app shell. Callers add a creature/env pack, then `App::run`.
+pub fn build_headless_batch_app(config: &HeadlessBatchConfig) -> App {
+    let headless = HeadlessSimConfig {
+        fixed_hz: config.fixed_hz,
+        runner_wait: Duration::ZERO,
+        max_ticks: config.max_ticks,
+    };
+
+    let mut app = App::new();
+    configure_headless_app(&mut app, &headless);
+
+    app.add_plugins(avian3d::prelude::PhysicsPlugins::default())
+        .add_plugins(SimCorePlugin {
+            fixed_hz: headless.fixed_hz,
+            isolation: config.isolation.clone(),
+            interpolate_transforms: config.interpolate,
+        })
+        .insert_resource(avian3d::prelude::Gravity(config.gravity))
+        .insert_resource(crate::rl::SpawnEnvBatch {
+            count: config.env_count,
+            interpolate: config.interpolate,
+        });
+
+    app
+}
+
 #[derive(Resource, Clone, Copy)]
 struct MaxTicks(u64);
 
-fn exit_after_max_ticks(tick: Res<SimTick>, max_ticks: Res<MaxTicks>, mut exit: MessageWriter<AppExit>) {
+fn exit_after_max_ticks(
+    tick: Res<SimTick>,
+    max_ticks: Res<MaxTicks>,
+    mut exit: MessageWriter<AppExit>,
+) {
     if tick.0 >= max_ticks.0 {
         exit.write(AppExit::Success);
     }

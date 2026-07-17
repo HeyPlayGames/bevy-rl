@@ -4,9 +4,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_transform_interpolation::prelude::TransformInterpolation;
 
-use crate::creature::{
-    BodyDesc, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind,
-};
+use crate::creature::{BodyDesc, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind};
 use crate::env::{
     env_creature_collision_layers, env_origin, EnvId, EnvIsolationConfig, EnvRoot, SimBody,
     SimJoint,
@@ -52,21 +50,14 @@ pub fn spawn_creature(
     let mut bodies: HashMap<String, Entity> = HashMap::new();
 
     for body in &creature.bodies {
-        let entity = spawn_body(
-            commands,
-            env_id,
-            world_origin,
-            body,
-            layers,
-            interpolate,
-        );
+        let entity = spawn_body(commands, env_id, world_origin, body, layers, interpolate);
         bodies.insert(body.name.clone(), entity);
     }
 
-    let mut joints = Vec::with_capacity(creature.joints.len());
+    let mut joints: HashMap<String, Entity> = HashMap::new();
     for joint in &creature.joints {
         let entity = spawn_joint(commands, env_id, &bodies, joint);
-        joints.push(entity);
+        joints.insert(joint.name.clone(), entity);
     }
 
     CreatureInstance {

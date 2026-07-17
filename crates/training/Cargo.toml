@@ -1,13 +1,9 @@
 [package]
-name = "sim_headless"
+name = "training"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Headless batch runner for parallel physics environments"
-
-[[bin]]
-name = "sim_headless"
-path = "src/main.rs"
+description = "PPO utilities: rollouts, GAE, update loop, and train dashboard"
 
 [dependencies]
 bevy = { workspace = true, features = [
@@ -17,5 +13,12 @@ bevy = { workspace = true, features = [
     "multi_threaded",
 ] }
 avian3d = { workspace = true }
+burn = { workspace = true, default-features = false, features = [
+    "std",
+    "wgpu",
+    "autodiff",
+    "train",
+    "tui",
+] }
+policy = { workspace = true }
 sim_core = { workspace = true }
-sim_envs = { workspace = true }

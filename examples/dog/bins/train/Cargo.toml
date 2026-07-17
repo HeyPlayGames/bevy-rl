@@ -1,0 +1,20 @@
+[package]
+name = "dog_train"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dog example: PPO training binary"
+
+[[bin]]
+name = "dog_train"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_log",
+    "bevy_state",
+    "multi_threaded",
+] }
+dog = { path = "../.." }
+training = { workspace = true }

@@ -1,11 +1,13 @@
 [package]
-name = "sim_envs"
+name = "dog"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Concrete simulation environments (flat ground + dog-like quadruped)"
+description = "Example creature pack: dog quadruped balance + train/view binaries"
 
 [dependencies]
 bevy = { workspace = true, features = ["std"] }
 avian3d = { workspace = true }
+serde = { workspace = true }
+rand = { workspace = true }
 sim_core = { workspace = true }

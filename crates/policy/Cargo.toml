@@ -1,0 +1,12 @@
+[package]
+name = "policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Burn actor-critic policies for creature control (train + in-sim inference)"
+
+[dependencies]
+burn = { workspace = true, default-features = false, features = ["std", "wgpu"] }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

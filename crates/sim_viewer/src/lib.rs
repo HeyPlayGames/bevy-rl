@@ -1,7 +1,13 @@
 //! Multi-view client: watch parallel envs with transform interpolation.
+//!
+//! Creature-agnostic: compose with a creature pack plugin, [`CreatureSpec`],
+//! [`SpawnEnvBatch`], and [`ViewerCreatureVisuals`].
+
+mod policy_control;
 
 use avian3d::prelude::*;
 use bevy::camera::Viewport;
+use bevy::ecs::message::MessageWriter;
 use bevy::light::CascadeShadowConfigBuilder;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -11,17 +17,32 @@ use bevy::ui_widgets::{
     TrackClick, ValueChange,
 };
 use bevy::window::WindowResolution;
+use policy_control::{configure_policy_control, spawn_policy_controls, VIEWER_EPISODE_HORIZON};
 use sim_core::prelude::*;
-use sim_envs::{
-    dog_quadruped_desc, ground_half_extents, spawn_dog_ground_env, DogGroundEnv, DogGroundPlugin,
-    SpawnDogGroundBatch,
-};
 
 const MAX_VIEW_COUNT: usize = 64;
 const DEFAULT_ENV_COUNT: usize = 4;
 
 const SLIDER_TRACK: Color = Color::srgb(0.12, 0.13, 0.16);
 const SLIDER_THUMB: Color = Color::srgb(0.35, 0.65, 0.42);
+
+/// Morphology used to build debug meshes for dynamic bodies.
+#[derive(Resource, Clone, Debug)]
+pub struct ViewerCreatureVisuals {
+    pub creature: CreatureDesc,
+    pub creature_color: Color,
+    pub ground_color: Color,
+}
+
+impl Default for ViewerCreatureVisuals {
+    fn default() -> Self {
+        Self {
+            creature: CreatureDesc::new("creature"),
+            creature_color: Color::srgb(0.75, 0.55, 0.35),
+            ground_color: Color::srgb(0.62, 0.62, 0.66),
+        }
+    }
+}
 
 pub struct SimViewerPlugin {
     pub env_count: u32,
@@ -42,7 +63,7 @@ impl Plugin for SimViewerPlugin {
             env_count,
             spawned_count: env_count,
         })
-        .insert_resource(SpawnDogGroundBatch {
+        .insert_resource(SpawnEnvBatch {
             count: env_count as u32,
             interpolate: true,
         })
@@ -56,9 +77,9 @@ impl Plugin for SimViewerPlugin {
                 grid_columns: 16,
             },
             interpolate_transforms: true,
-        })
-        .add_plugins(DogGroundPlugin)
-        .add_systems(
+        });
+        configure_policy_control(app);
+        app.add_systems(
             Startup,
             (
                 setup_lights,
@@ -81,7 +102,7 @@ impl Plugin for SimViewerPlugin {
 }
 
 #[derive(Resource, Clone, Copy, Debug)]
-struct ViewerState {
+pub(crate) struct ViewerState {
     /// Active viewports / watched env count (1..=64).
     env_count: usize,
     /// How many envs are currently spawned in the world.
@@ -223,6 +244,7 @@ fn setup_viewer_ui(mut commands: Commands, state: Res<ViewerState>) {
                 ));
 
                 controls.spawn(env_count_slider(state.env_count as f32));
+                spawn_policy_controls(controls);
             });
         });
 }
@@ -289,12 +311,10 @@ fn env_count_slider(initial: f32) -> impl Bundle {
 fn on_env_count_changed(
     value_change: On<ValueChange<f32>>,
     mut state: ResMut<ViewerState>,
-    mut commands: Commands,
     mut count_labels: Query<&mut Text, With<EnvCountLabel>>,
-    isolation: Res<EnvIsolationConfig>,
-    roots: Query<(Entity, &EnvRoot)>,
-    bodies: Query<(Entity, &SimBody)>,
-    joints: Query<(Entity, &SimJoint)>,
+    mut buffers: ResMut<RlBuffers>,
+    spec: Res<CreatureSpec>,
+    mut respawn: MessageWriter<RespawnAllEnvs>,
 ) {
     let count = value_change.value.round().clamp(1.0, MAX_VIEW_COUNT as f32) as usize;
     state.env_count = count;
@@ -307,25 +327,17 @@ fn on_env_count_changed(
         return;
     }
 
-    let mut env_indices = std::collections::BTreeSet::new();
-    for (_, root) in &roots {
-        env_indices.insert(root.env_id.index());
-    }
-    for (_, body) in &bodies {
-        env_indices.insert(body.env_id.index());
-    }
-    for (_, joint) in &joints {
-        env_indices.insert(joint.env_id.index());
-    }
-
-    for index in env_indices {
-        despawn_env(&mut commands, EnvId::new(index), &roots, &bodies, &joints);
-    }
-
-    for index in 0..count as u32 {
-        spawn_dog_ground_env(&mut commands, EnvId::new(index), &isolation, true);
-    }
+    respawn.write(RespawnAllEnvs {
+        count: count as u32,
+        interpolate: true,
+    });
     state.spawned_count = count;
+    buffers.resize(
+        count,
+        spec.observation_dim,
+        spec.action_dim,
+        VIEWER_EPISODE_HORIZON,
+    );
 }
 
 fn viewport_grid(view_count: usize) -> (u32, u32) {
@@ -465,7 +477,7 @@ struct DebugMeshAssets {
     capsule_meshes: std::collections::HashMap<(u32, u32), Handle<Mesh>>,
     cuboid_meshes: std::collections::HashMap<(u32, u32, u32), Handle<Mesh>>,
     ground_mesh: Handle<Mesh>,
-    dog_material: Handle<StandardMaterial>,
+    creature_material: Handle<StandardMaterial>,
     ground_material: Handle<StandardMaterial>,
 }
 
@@ -474,24 +486,23 @@ fn setup_debug_meshes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     isolation: Res<EnvIsolationConfig>,
+    visuals: Res<ViewerCreatureVisuals>,
 ) {
-    let dog_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.75, 0.55, 0.35),
+    let creature_material = materials.add(StandardMaterial {
+        base_color: visuals.creature_color,
         perceptual_roughness: 0.85,
         ..default()
     });
     let ground_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.62, 0.62, 0.66),
+        base_color: visuals.ground_color,
         perceptual_roughness: 0.95,
         ..default()
     });
 
-    // Prebuild common dog shapes (scaled by 1000 for hashmap keys).
-    let dog = dog_quadruped_desc();
     let mut capsule_meshes = std::collections::HashMap::new();
     let mut cuboid_meshes = std::collections::HashMap::new();
 
-    for body in &dog.bodies {
+    for body in &visuals.creature.bodies {
         match body.shape {
             BodyShape::Capsule { radius, length } => {
                 let key = ((radius * 1000.0) as u32, (length * 1000.0) as u32);
@@ -531,7 +542,7 @@ fn setup_debug_meshes(
         capsule_meshes,
         cuboid_meshes,
         ground_mesh,
-        dog_material,
+        creature_material,
         ground_material,
     });
 }
@@ -539,13 +550,14 @@ fn setup_debug_meshes(
 fn attach_debug_meshes(
     mut commands: Commands,
     assets: Res<DebugMeshAssets>,
+    visuals: Res<ViewerCreatureVisuals>,
     bodies: Query<
         (
             Entity,
             &SimBody,
             &RigidBody,
             Option<&Name>,
-            Option<&DogGroundEnv>,
+            Option<&FlatGround>,
         ),
         Without<DebugMeshAttached>,
     >,
@@ -561,7 +573,6 @@ fn attach_debug_meshes(
             continue;
         }
 
-        // Match dog body by name prefix before `_{env}`.
         let Some(name) = name else {
             continue;
         };
@@ -571,8 +582,12 @@ fn attach_debug_meshes(
             .map(|(prefix, _)| prefix)
             .unwrap_or(name.as_str());
 
-        let dog = dog_quadruped_desc();
-        let Some(body) = dog.bodies.iter().find(|body| body.name == body_name) else {
+        let Some(body) = visuals
+            .creature
+            .bodies
+            .iter()
+            .find(|body| body.name == body_name)
+        else {
             continue;
         };
 
@@ -605,23 +620,35 @@ fn attach_debug_meshes(
 
         commands.entity(entity).insert((
             Mesh3d(mesh),
-            MeshMaterial3d(assets.dog_material.clone()),
+            MeshMaterial3d(assets.creature_material.clone()),
             DebugMeshAttached,
         ));
     }
 }
 
-/// Convenience entry used by the viewer binary.
-pub fn run_viewer() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "sim_batch viewer".into(),
-                resolution: WindowResolution::new(1280, 720),
-                ..default()
-            }),
+/// Build a windowed viewer app shell. Callers add a creature pack plugin and visuals.
+pub fn build_viewer_app(env_count: u32) -> App {
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "bevy-rl viewer".into(),
+            resolution: WindowResolution::new(1280, 720),
             ..default()
-        }))
-        .add_plugins(SimViewerPlugin::default())
-        .run();
+        }),
+        ..default()
+    }))
+    .add_plugins(SimViewerPlugin { env_count });
+    app
+}
+
+/// Run the multi-view client with a creature pack and debug-mesh visuals.
+pub fn run_viewer(
+    env_count: u32,
+    visuals: ViewerCreatureVisuals,
+    add_creature_plugins: impl FnOnce(&mut App),
+) {
+    let mut app = build_viewer_app(env_count);
+    app.insert_resource(visuals);
+    add_creature_plugins(&mut app);
+    app.run();
 }
