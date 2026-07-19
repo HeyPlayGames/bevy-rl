@@ -9,6 +9,39 @@ use bevy::prelude::*;
 use crate::control::{apply_joint_targets, ActuatedRevolute, JointTargetAngle};
 use crate::env::SimJoint;
 
+/// Physics vs policy rates. Policy actions are held for [`Self::action_repeat`]
+/// fixed steps so training / inference can run slower than the sim tick.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct PolicyControl {
+    pub physics_hz: f64,
+    pub policy_hz: f64,
+}
+
+impl Default for PolicyControl {
+    fn default() -> Self {
+        Self {
+            physics_hz: 60.0,
+            policy_hz: 20.0,
+        }
+    }
+}
+
+impl PolicyControl {
+    /// Fixed physics steps per policy decision (`max(1, round(physics/policy))`).
+    pub fn action_repeat(&self) -> u32 {
+        if self.policy_hz <= 0.0 {
+            return 1;
+        }
+        ((self.physics_hz / self.policy_hz).round() as u32).max(1)
+    }
+}
+
+/// Counts down fixed steps until the next policy inference (viewer / held actions).
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct PolicyDecimation {
+    pub steps_until_decision: u32,
+}
+
 /// Identity and dimensions for the creature pack currently in the app.
 #[derive(Resource, Clone, Debug)]
 pub struct CreatureSpec {

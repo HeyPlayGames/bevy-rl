@@ -5,12 +5,9 @@
 
 mod policy_control;
 
-use std::f32::consts::FRAC_PI_2;
-
 use avian3d::prelude::*;
 use bevy::camera::Viewport;
 use bevy::ecs::message::MessageWriter;
-use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::CascadeShadowConfigBuilder;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -20,6 +17,7 @@ use bevy::ui_widgets::{
     SliderValue, TrackClick, ValueChange,
 };
 use bevy::window::WindowResolution;
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use policy_control::{configure_policy_control, spawn_policy_controls, VIEWER_EPISODE_HORIZON};
 use sim_core::prelude::*;
 
@@ -29,9 +27,6 @@ const DEFAULT_ENV_COUNT: usize = 4;
 const SLIDER_TRACK: Color = Color::srgb(0.12, 0.13, 0.16);
 const SLIDER_THUMB: Color = Color::srgb(0.35, 0.65, 0.42);
 
-const ORBIT_YAW_SPEED: f32 = 0.005;
-const ORBIT_PITCH_SPEED: f32 = 0.004;
-const ORBIT_PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
 const ORBIT_EYE_OFFSET: Vec3 = Vec3::new(2.4, 1.6, 2.4);
 const ORBIT_TARGET_HEIGHT: f32 = 0.4;
 
@@ -79,8 +74,10 @@ impl Plugin for SimViewerPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
         .insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)))
         .add_plugins(PhysicsPlugins::default())
+        .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(SimCorePlugin {
             fixed_hz: 60.0,
+            policy_hz: 20.0,
             isolation: EnvIsolationConfig {
                 spacing: 40.0,
                 grid_columns: 16,
@@ -88,27 +85,26 @@ impl Plugin for SimViewerPlugin {
             interpolate_transforms: true,
         });
         configure_policy_control(app);
-        app.init_resource::<OrbitDrag>()
-            .add_systems(
-                Startup,
-                (
-                    setup_lights,
-                    setup_cameras,
-                    setup_viewer_ui,
-                    setup_debug_meshes,
-                )
-                    .chain(),
+        app.add_systems(
+            Startup,
+            (
+                setup_lights,
+                setup_ui_camera,
+                setup_viewer_ui,
+                setup_debug_meshes,
             )
-            .add_systems(
-                Update,
-                (
-                    sync_camera_viewports,
-                    sync_env_labels,
-                    sync_slider_visuals,
-                    orbit_env_cameras,
-                    attach_debug_meshes,
-                ),
-            );
+                .chain(),
+        )
+        .add_systems(
+            Update,
+            (
+                sync_env_cameras,
+                sync_env_labels,
+                sync_slider_visuals,
+                sync_pan_orbit_ui_blocking,
+                attach_debug_meshes,
+            ),
+        );
     }
 }
 
@@ -123,22 +119,15 @@ pub(crate) struct ViewerState {
 #[derive(Component)]
 struct EnvCamera {
     slot: usize,
-    yaw: f32,
-    pitch: f32,
-    radius: f32,
-    center: Vec3,
-}
-
-#[derive(Resource, Default)]
-struct OrbitDrag {
-    /// Slot locked for the current drag; kept even if the cursor leaves that viewport.
-    active_slot: Option<usize>,
 }
 
 #[derive(Component)]
 struct EnvLabel {
     slot: usize,
 }
+
+#[derive(Component)]
+struct ViewerUiRoot;
 
 #[derive(Component)]
 struct EnvCountSlider;
@@ -148,6 +137,89 @@ struct EnvCountSliderThumb;
 
 #[derive(Component)]
 struct EnvCountLabel;
+
+fn setup_ui_camera(mut commands: Commands) {
+    // Dedicated UI camera: full-window, transparent clear, above all 3D views.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: MAX_VIEW_COUNT as isize + 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        IsDefaultUiCamera,
+    ));
+}
+
+fn spawn_env_camera(
+    commands: &mut Commands,
+    isolation: &EnvIsolationConfig,
+    slot: usize,
+    viewport: Option<(UVec2, UVec2)>,
+) {
+    let env_id = EnvId::new(slot as u32);
+    let focus = env_origin(env_id, isolation) + Vec3::new(0.0, ORBIT_TARGET_HEIGHT, 0.0);
+    let eye = focus + ORBIT_EYE_OFFSET;
+    // Leave yaw/pitch/radius unset so PanOrbitCamera derives them from Transform + focus
+    // (its pitch convention is not Bevy's looking_at euler).
+    commands.spawn((
+        Camera3d::default(),
+        Camera {
+            order: slot as isize,
+            is_active: true,
+            clear_color: if slot == 0 {
+                ClearColorConfig::Default
+            } else {
+                ClearColorConfig::None
+            },
+            viewport: viewport.map(|(physical_position, physical_size)| Viewport {
+                physical_position,
+                physical_size,
+                ..default()
+            }),
+            ..default()
+        },
+        EnvCamera { slot },
+        Transform::from_translation(eye),
+        PanOrbitCamera {
+            focus,
+            target_focus: focus,
+            ..default()
+        },
+    ));
+}
+
+fn spawn_env_label(
+    commands: &mut Commands,
+    parent: Entity,
+    slot: usize,
+    position: Option<Vec2>,
+) {
+    let left = position.map(|position| position.x).unwrap_or(8.0);
+    let top = position.map(|position| position.y).unwrap_or(8.0);
+    commands.entity(parent).with_children(|root| {
+        root.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(left),
+                top: px(top),
+                padding: UiRect::axes(px(8), px(4)),
+                border_radius: BorderRadius::all(px(4)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            EnvLabel { slot },
+            Pickable::IGNORE,
+        ))
+        .with_children(|label| {
+            label.spawn((
+                Text::new(format!("Env {slot}")),
+                TextFont::from_font_size(16.0),
+                TextColor(Color::srgb(0.95, 0.95, 0.95)),
+            ));
+        });
+    });
+}
 
 fn setup_lights(mut commands: Commands) {
     commands.spawn((
@@ -165,48 +237,6 @@ fn setup_lights(mut commands: Commands) {
     ));
 }
 
-fn setup_cameras(mut commands: Commands, isolation: Res<EnvIsolationConfig>) {
-    // Dedicated UI camera: full-window, transparent clear, above all 3D views.
-    commands.spawn((
-        Camera2d,
-        Camera {
-            order: MAX_VIEW_COUNT as isize + 1,
-            clear_color: ClearColorConfig::None,
-            ..default()
-        },
-        IsDefaultUiCamera,
-    ));
-
-    for slot in 0..MAX_VIEW_COUNT {
-        let env_id = EnvId::new(slot as u32);
-        let center = env_origin(env_id, &isolation) + Vec3::new(0.0, ORBIT_TARGET_HEIGHT, 0.0);
-        let eye = center + ORBIT_EYE_OFFSET;
-        let transform = Transform::from_translation(eye).looking_at(center, Vec3::Y);
-        let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
-        commands.spawn((
-            Camera3d::default(),
-            Camera {
-                order: slot as isize,
-                is_active: false,
-                clear_color: if slot == 0 {
-                    ClearColorConfig::Default
-                } else {
-                    ClearColorConfig::None
-                },
-                ..default()
-            },
-            EnvCamera {
-                slot,
-                yaw,
-                pitch,
-                radius: ORBIT_EYE_OFFSET.length(),
-                center,
-            },
-            transform,
-        ));
-    }
-}
-
 fn setup_viewer_ui(mut commands: Commands, state: Res<ViewerState>) {
     commands
         .spawn((
@@ -218,32 +248,9 @@ fn setup_viewer_ui(mut commands: Commands, state: Res<ViewerState>) {
             },
             GlobalZIndex(10),
             Pickable::IGNORE,
+            ViewerUiRoot,
         ))
         .with_children(|root| {
-            for slot in 0..MAX_VIEW_COUNT {
-                root.spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(8),
-                        top: px(8),
-                        padding: UiRect::axes(px(8), px(4)),
-                        border_radius: BorderRadius::all(px(4)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
-                    EnvLabel { slot },
-                    Visibility::Hidden,
-                    Pickable::IGNORE,
-                ))
-                .with_children(|label| {
-                    label.spawn((
-                        Text::new(format!("Env {slot}")),
-                        TextFont::from_font_size(16.0),
-                        TextColor(Color::srgb(0.95, 0.95, 0.95)),
-                    ));
-                });
-            }
-
             root.spawn((
                 Node {
                     position_type: PositionType::Absolute,
@@ -395,149 +402,116 @@ fn viewport_layout(
     ))
 }
 
-fn viewport_slot_at(
-    view_count: usize,
-    width: u32,
-    height: u32,
-    physical_cursor: Vec2,
-) -> Option<usize> {
-    for slot in 0..view_count {
-        let Some((position, size)) = viewport_layout(view_count, width, height, slot) else {
+fn sync_pan_orbit_ui_blocking(
+    ui_hovered: Query<&Hovered, Or<(With<Slider>, With<Button>)>>,
+    mut cameras: Query<&mut PanOrbitCamera>,
+) {
+    let ui_blocking = ui_hovered.iter().any(|hovered| hovered.0);
+    for mut camera in &mut cameras {
+        camera.enabled = !ui_blocking;
+    }
+}
+
+fn sync_env_cameras(
+    mut commands: Commands,
+    state: Res<ViewerState>,
+    isolation: Res<EnvIsolationConfig>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut cameras: Query<(Entity, &EnvCamera, &mut Camera)>,
+) {
+    let window_size = windows
+        .single()
+        .ok()
+        .map(|window| (window.physical_width(), window.physical_height()))
+        .filter(|(width, height)| *width > 0 && *height > 0);
+
+    let mut present = [false; MAX_VIEW_COUNT];
+    let mut despawn = Vec::new();
+    for (entity, env_camera, mut camera) in &mut cameras {
+        if env_camera.slot >= state.env_count || env_camera.slot >= MAX_VIEW_COUNT {
+            despawn.push(entity);
+            continue;
+        }
+        present[env_camera.slot] = true;
+        let Some((width, height)) = window_size else {
             continue;
         };
-        let min_x = position.x as f32;
-        let min_y = position.y as f32;
-        let max_x = min_x + size.x as f32;
-        let max_y = min_y + size.y as f32;
-        if physical_cursor.x >= min_x
-            && physical_cursor.x < max_x
-            && physical_cursor.y >= min_y
-            && physical_cursor.y < max_y
-        {
-            return Some(slot);
-        }
-    }
-    None
-}
-
-fn apply_orbit_transform(transform: &mut Transform, camera: &EnvCamera) {
-    transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
-    transform.translation = camera.center - *transform.forward() * camera.radius;
-}
-
-fn orbit_env_cameras(
-    mut drag: ResMut<OrbitDrag>,
-    mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mouse_motion: Res<AccumulatedMouseMotion>,
-    state: Res<ViewerState>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    ui_hovered: Query<&Hovered, Or<(With<Slider>, With<Button>)>>,
-    mut cameras: Query<(&mut EnvCamera, &mut Transform)>,
-) {
-    if !mouse_buttons.pressed(MouseButton::Left) {
-        drag.active_slot = None;
-    } else if mouse_buttons.just_pressed(MouseButton::Left) {
-        let ui_blocking = ui_hovered.iter().any(|hovered| hovered.0);
-        if !ui_blocking {
-            let Ok(window) = windows.single() else {
-                return;
-            };
-            let Some(cursor) = window.cursor_position() else {
-                return;
-            };
-            let scale = window.scale_factor().max(0.0001);
-            let physical_cursor = cursor * scale;
-            drag.active_slot = viewport_slot_at(
-                state.env_count,
-                window.physical_width(),
-                window.physical_height(),
-                physical_cursor,
-            );
-        }
-    }
-
-    let Some(active_slot) = drag.active_slot else {
-        return;
-    };
-
-    if !mouse_buttons.pressed(MouseButton::Left) {
-        return;
-    }
-
-    let delta = mouse_motion.delta;
-    if delta == Vec2::ZERO {
-        return;
-    }
-
-    for (mut env_camera, mut transform) in &mut cameras {
-        if env_camera.slot != active_slot {
+        let Some((physical_position, physical_size)) =
+            viewport_layout(state.env_count, width, height, env_camera.slot)
+        else {
             continue;
-        }
-        env_camera.yaw -= delta.x * ORBIT_YAW_SPEED;
-        env_camera.pitch = (env_camera.pitch - delta.y * ORBIT_PITCH_SPEED)
-            .clamp(-ORBIT_PITCH_LIMIT, ORBIT_PITCH_LIMIT);
-        apply_orbit_transform(&mut transform, &env_camera);
-        break;
+        };
+        camera.is_active = true;
+        camera.viewport = Some(Viewport {
+            physical_position,
+            physical_size,
+            ..default()
+        });
     }
-}
-
-fn sync_camera_viewports(
-    state: Res<ViewerState>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    mut cameras: Query<(&EnvCamera, &mut Camera)>,
-) {
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let width = window.physical_width();
-    let height = window.physical_height();
-    if width == 0 || height == 0 {
-        return;
+    for entity in despawn {
+        commands.entity(entity).despawn();
     }
-
-    for (env_camera, mut camera) in &mut cameras {
-        match viewport_layout(state.env_count, width, height, env_camera.slot) {
-            Some((physical_position, physical_size)) => {
-                camera.is_active = true;
-                camera.viewport = Some(Viewport {
-                    physical_position,
-                    physical_size,
-                    ..default()
-                });
-            }
-            None => {
-                camera.is_active = false;
-                camera.viewport = None;
-            }
+    for slot in 0..state.env_count {
+        if !present[slot] {
+            let viewport = window_size
+                .and_then(|(width, height)| viewport_layout(state.env_count, width, height, slot));
+            spawn_env_camera(&mut commands, &isolation, slot, viewport);
         }
     }
 }
 
 fn sync_env_labels(
+    mut commands: Commands,
     state: Res<ViewerState>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    mut labels: Query<(&EnvLabel, &mut Node, &mut Visibility)>,
+    roots: Query<Entity, With<ViewerUiRoot>>,
+    mut labels: Query<(Entity, &EnvLabel, &mut Node)>,
 ) {
-    let Ok(window) = windows.single() else {
+    let Ok(root) = roots.single() else {
         return;
     };
-    let width = window.physical_width();
-    let height = window.physical_height();
-    if width == 0 || height == 0 {
-        return;
-    }
-    let scale = window.scale_factor().max(0.0001);
 
-    for (label, mut node, mut visibility) in &mut labels {
-        match viewport_layout(state.env_count, width, height, label.slot) {
-            Some((physical_position, _)) => {
-                *visibility = Visibility::Visible;
-                node.left = px(physical_position.x as f32 / scale + 8.0);
-                node.top = px(physical_position.y as f32 / scale + 8.0);
-            }
-            None => {
-                *visibility = Visibility::Hidden;
-            }
+    let label_layout = windows.single().ok().and_then(|window| {
+        let width = window.physical_width();
+        let height = window.physical_height();
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some((width, height, window.scale_factor().max(0.0001)))
+    });
+
+    let mut present = [false; MAX_VIEW_COUNT];
+    let mut despawn = Vec::new();
+    for (entity, label, mut node) in &mut labels {
+        if label.slot >= state.env_count || label.slot >= MAX_VIEW_COUNT {
+            despawn.push(entity);
+            continue;
+        }
+        present[label.slot] = true;
+        let Some((width, height, scale)) = label_layout else {
+            continue;
+        };
+        let Some((physical_position, _)) =
+            viewport_layout(state.env_count, width, height, label.slot)
+        else {
+            continue;
+        };
+        node.left = px(physical_position.x as f32 / scale + 8.0);
+        node.top = px(physical_position.y as f32 / scale + 8.0);
+    }
+    for entity in despawn {
+        commands.entity(entity).despawn();
+    }
+    for slot in 0..state.env_count {
+        if !present[slot] {
+            let position = label_layout.and_then(|(width, height, scale)| {
+                let (physical_position, _) = viewport_layout(state.env_count, width, height, slot)?;
+                Some(Vec2::new(
+                    physical_position.x as f32 / scale + 8.0,
+                    physical_position.y as f32 / scale + 8.0,
+                ))
+            });
+            spawn_env_label(&mut commands, root, slot, position);
         }
     }
 }
@@ -705,7 +679,6 @@ fn attach_debug_meshes(
         else {
             continue;
         };
-
         let mesh_handle = match body.shape {
             BodyShape::Capsule { radius, length } => {
                 let key = ((radius * 1000.0) as u32, (length * 1000.0) as u32);

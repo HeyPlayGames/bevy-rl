@@ -161,6 +161,8 @@ fn init_rl_buffers(
 fn apply_viewer_policy_mean_actions(
     policy: Res<ViewerPolicy>,
     spec: Res<CreatureSpec>,
+    policy_control: Res<PolicyControl>,
+    mut decimation: ResMut<PolicyDecimation>,
     mut buffers: ResMut<RlBuffers>,
 ) {
     let env_count = buffers.observations.len();
@@ -172,8 +174,15 @@ fn apply_viewer_policy_mean_actions(
         for actions in &mut buffers.actions {
             actions.fill(0.0);
         }
+        decimation.steps_until_decision = 0;
         return;
     };
+
+    if decimation.steps_until_decision > 0 {
+        decimation.steps_until_decision -= 1;
+        return;
+    }
+    decimation.steps_until_decision = policy_control.action_repeat().saturating_sub(1);
 
     let observation_dim = spec.observation_dim;
     let action_dim = spec.action_dim;
@@ -237,6 +246,7 @@ fn on_load_policy_activated(
     _activate: On<Activate>,
     mut policy: ResMut<ViewerPolicy>,
     mut buffers: ResMut<RlBuffers>,
+    mut decimation: ResMut<PolicyDecimation>,
     spec: Res<CreatureSpec>,
 ) {
     let mut dialog = rfd::FileDialog::new()
@@ -271,17 +281,20 @@ fn on_load_policy_activated(
             actions.fill(0.0);
         }
     }
+    decimation.steps_until_decision = 0;
 }
 
 fn on_clear_policy_activated(
     _activate: On<Activate>,
     mut policy: ResMut<ViewerPolicy>,
     mut buffers: ResMut<RlBuffers>,
+    mut decimation: ResMut<PolicyDecimation>,
 ) {
     policy.clear();
     for actions in &mut buffers.actions {
         actions.fill(0.0);
     }
+    decimation.steps_until_decision = 0;
     bevy::log::info!("cleared viewer policy (mid-range joint targets)");
 }
 

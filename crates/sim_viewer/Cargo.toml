@@ -8,6 +8,7 @@ description = "Windowed multi-view client for watching parallel sim environments
 [dependencies]
 bevy = { workspace = true, default-features = true }
 avian3d = { workspace = true }
+bevy_panorbit_camera = { workspace = true }
 burn = { workspace = true, default-features = false, features = ["std", "wgpu"] }
 sim_core = { workspace = true }
 policy = { workspace = true }

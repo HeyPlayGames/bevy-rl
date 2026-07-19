@@ -23,6 +23,7 @@ pub struct TrainerDashboard {
     loss_metric_id: MetricId,
     reward_metric_id: MetricId,
     episode_return_metric_id: MetricId,
+    update_time_metric_id: MetricId,
     total_updates: usize,
 }
 
@@ -33,6 +34,7 @@ impl TrainerDashboard {
         let loss_metric_id = MetricId::new(Arc::new("Loss".to_string()));
         let reward_metric_id = MetricId::new(Arc::new("Mean Reward".to_string()));
         let episode_return_metric_id = MetricId::new(Arc::new("Mean Episode Return".to_string()));
+        let update_time_metric_id = MetricId::new(Arc::new("Update Time".to_string()));
 
         let mut renderer = if std::io::stdout().is_terminal() {
             Some(TuiMetricsRendererWrapper::new(interrupter.clone(), None))
@@ -71,6 +73,17 @@ impl TrainerDashboard {
                     higher_is_better: true,
                 }),
             });
+            renderer.register_metric(MetricDefinition {
+                metric_id: update_time_metric_id.clone(),
+                name: "Update Time".to_string(),
+                description: Some(
+                    "Wall-clock seconds for one PPO update (rollout + policy update)".to_string(),
+                ),
+                attributes: MetricAttributes::Numeric(NumericAttributes {
+                    unit: Some("s".into()),
+                    higher_is_better: false,
+                }),
+            });
         }
 
         Self {
@@ -79,6 +92,7 @@ impl TrainerDashboard {
             loss_metric_id,
             reward_metric_id,
             episode_return_metric_id,
+            update_time_metric_id,
             total_updates,
         }
     }
@@ -88,13 +102,14 @@ impl TrainerDashboard {
         self.interrupter.should_stop()
     }
 
-    /// Push loss / reward metrics and refresh the TUI progress bar for this update.
+    /// Push loss / reward / timing metrics and refresh the TUI progress bar for this update.
     pub fn record_update(
         &mut self,
         update_index: usize,
         loss: f32,
         mean_reward: f32,
         mean_episode_return: f32,
+        update_time_secs: f64,
     ) {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -132,6 +147,18 @@ impl TrainerDashboard {
                 ),
             ),
             episode_return_numeric,
+        ));
+
+        let update_time_numeric = NumericEntry::Value(update_time_secs);
+        renderer.update_train(MetricState::Numeric(
+            MetricEntry::new(
+                self.update_time_metric_id.clone(),
+                SerializedEntry::new(
+                    format!("{update_time_secs:.2}"),
+                    update_time_numeric.serialize(),
+                ),
+            ),
+            update_time_numeric,
         ));
 
         let completed = update_index.saturating_add(1);

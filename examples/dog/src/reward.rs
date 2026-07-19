@@ -4,15 +4,20 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use sim_core::{load_json_config_or_default, reward, JsonConfigError};
 
+use crate::contacts::DogGroundContacts;
+
 /// Weights for the dog balance objective.
 ///
 /// Tunable at runtime via `config/reward.json` (no recompile required).
 #[derive(Resource, Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DogBalanceConfig {
     pub target_height: f32,
     pub height_tolerance: f32,
     pub upright_weight: f32,
     pub height_weight: f32,
+    /// Weight for foot-stance term (peaks when 3–4 lower legs touch ground).
+    pub stance_weight: f32,
     /// Episode ends when torso height drops below this.
     pub min_height: f32,
     /// Episode ends when uprightness (`up · world_up`) drops below this.
@@ -28,6 +33,7 @@ impl Default for DogBalanceConfig {
             height_tolerance: 0.25,
             upright_weight: 1.0,
             height_weight: 0.5,
+            stance_weight: 0.5,
             min_height: 0.2,
             min_upright: 0.2,
             fall_penalty: -1.0,
@@ -52,16 +58,35 @@ impl DogBalanceConfig {
     }
 }
 
-/// Fixed-horizon balance reward: stay upright near target height.
-pub fn dog_balance_reward(config: &DogBalanceConfig, up: Vec3, height: f32) -> f32 {
+/// Fixed-horizon balance reward: stay upright near target height on the feet.
+pub fn dog_balance_reward(
+    config: &DogBalanceConfig,
+    up: Vec3,
+    height: f32,
+    contacts: DogGroundContacts,
+) -> f32 {
     let upright = reward::uprightness(up, Vec3::Y);
     let height_term = reward::height_band(height, config.target_height, config.height_tolerance);
+    let stance_term = stance_term(contacts.foot_contact_count());
 
-    config.upright_weight * upright + config.height_weight * height_term
+    config.upright_weight * upright
+        + config.height_weight * height_term
+        + config.stance_weight * stance_term
 }
 
 /// True when torso is too low or tipped past the fall thresholds.
 pub fn dog_has_fallen(config: &DogBalanceConfig, up: Vec3, height: f32) -> bool {
     let upright = reward::uprightness(up, Vec3::Y);
     height < config.min_height || upright < config.min_upright
+}
+
+/// Peaks at `1` for four feet down; three feet still scores strongly.
+fn stance_term(foot_contact_count: u32) -> f32 {
+    match foot_contact_count {
+        4 => 1.0,
+        3 => 0.75,
+        2 => 0.35,
+        1 => 0.1,
+        _ => 0.0,
+    }
 }

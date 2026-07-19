@@ -4,7 +4,7 @@ Infrastructure for training RL agents in parallel Bevy + Avian physics sims (Bur
 
 Many env instances share one Avian world, isolated by spatial separation and collision layers. Policies are trained with PPO (Burn wgpu) and can run in-sim via the viewer.
 
-Bevy-rl ships **crates** (sim, policy, training, viewer). Entry points for train / view live in example packs — start with [`examples/dog`](examples/dog).
+Bevy-rl ships **crates** (sim, policy, training, viewer, morphology studio). Entry points for train / view / morphology edit live in example packs — start with [`examples/dog`](examples/dog).
 
 ## Workspace layout
 
@@ -14,7 +14,8 @@ Bevy-rl ships **crates** (sim, policy, training, viewer). Entry points for train
 | `policy` | Burn actor-critic + checkpoints (keyed by creature id) |
 | `training` | PPO / GAE / rollout / train dashboard + `run_ppo` helper |
 | `sim_viewer` | Generic multi-view client (`run_viewer`) — compose with a creature pack |
-| `examples/dog` | **Example pack** — quadruped balance + `dog_train` / `dog_view` binaries |
+| `morphology_studio` | Visual morphology editor (`run_morphology_studio`) — gizmo edit, RON save/load, physics preview |
+| `examples/dog` | **Example pack** — quadruped balance + `dog_train` / `dog_view` / `dog_morphology_studio` binaries |
 
 ### Creature pack contract
 
@@ -32,6 +33,9 @@ Action → joint target is handled by `sim_core` (`ControlSystems::ApplyActions`
 ```bash
 # Watch envs (pick a policy in the UI to drive them)
 cargo run -p dog_view
+
+# Edit dog morphology (gizmos + RON save/load + physics preview)
+cargo run -p dog_morphology_studio
 
 # PPO training — Burn TUI shows loss / mean reward
 cargo run -p dog_train -- 16 50
@@ -68,11 +72,11 @@ Each save writes inference-ready weights (`.mpk`) plus JSON metadata:
 
 Metadata includes creature id, obs/action/hidden dims, update index, and mean reward. Load fails if dims do not match.
 
-During training, Burn's terminal UI shows live **Loss**, **Mean Reward**, and **Mean Episode Return** graphs (arrow keys switch metrics / plot types; `q` then `s` stops cleanly and still saves).
+During training, Burn's terminal UI shows live **Loss**, **Mean Reward**, **Mean Episode Return**, and **Update Time** (seconds per PPO update) graphs (arrow keys switch metrics / plot types; `q` then `s` stops cleanly and still saves).
 
 ## Design notes
 
-- Sims tick at 60 Hz; control is lockstep with physics (joint motor targets on revolutes).
-- Dog (example) observations: projected gravity, root lin/ang vel, joint angles + ang vels, height, previous actions (46-D).
+- Sims tick at 60 Hz physics; the policy runs at 20 Hz (actions held for 3 physics steps).
+- Dog (example) observations: projected gravity, root lin/ang vel, joint angles + ang vels, height, foot contacts, previous actions (50-D).
 - Dog actions: 12 normalized joint target angles.
-- Episodes are fixed-horizon; balance reward is soft (upright + height), with a fall penalty on terminal steps.
+- Episodes are fixed-horizon; balance reward is upright + height + foot stance, with a fall penalty on terminal steps.

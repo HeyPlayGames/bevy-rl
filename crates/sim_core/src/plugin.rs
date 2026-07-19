@@ -36,6 +36,9 @@ impl Default for HeadlessSimConfig {
 /// Does **not** add `PhysicsPlugins` — callers choose headless vs rendered feature sets.
 pub struct SimCorePlugin {
     pub fixed_hz: f64,
+    /// Policy / control decision rate. Actions are held across
+    /// `round(fixed_hz / policy_hz)` physics steps (e.g. 60/20 → 3).
+    pub policy_hz: f64,
     pub isolation: EnvIsolationConfig,
     pub interpolate_transforms: bool,
 }
@@ -44,6 +47,7 @@ impl Default for SimCorePlugin {
     fn default() -> Self {
         Self {
             fixed_hz: 60.0,
+            policy_hz: 20.0,
             isolation: EnvIsolationConfig::default(),
             interpolate_transforms: false,
         }
@@ -54,6 +58,11 @@ impl Plugin for SimCorePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.isolation.clone())
             .insert_resource(Time::<Fixed>::from_hz(self.fixed_hz))
+            .insert_resource(crate::rl::PolicyControl {
+                physics_hz: self.fixed_hz,
+                policy_hz: self.policy_hz,
+            })
+            .init_resource::<crate::rl::PolicyDecimation>()
             .init_resource::<SimTick>()
             .init_resource::<crate::rl::RlBuffers>()
             .init_resource::<crate::rl::EpisodeResetPolicy>()

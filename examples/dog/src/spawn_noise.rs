@@ -30,17 +30,32 @@ impl Default for DogSpawnNoise {
     }
 }
 
-/// Samples pose noise and applies it to a standing [`CreatureDesc`].
-pub fn apply_dog_spawn_noise(creature: &mut CreatureDesc, noise: &DogSpawnNoise) {
+/// Samples pose noise and returns absolute body poses for spawn / soft reset.
+///
+/// Joint angles are sampled around each revolute's `default_angle`, then a small
+/// rigid root transform is applied about the torso.
+pub fn sample_dog_spawn_poses(
+    morphology: &CreatureDesc,
+    noise: &DogSpawnNoise,
+) -> BodyPoseMap {
     let mut joint_angles = HashMap::new();
-    for joint in &creature.joints {
-        if !matches!(joint.kind, JointKind::Revolute { .. }) {
+    for joint in &morphology.joints {
+        let JointKind::Revolute {
+            default_angle,
+            angle_limits,
+            ..
+        } = joint.kind
+        else {
             continue;
+        };
+        let mut angle = default_angle + rand::random_range(-noise.joint_angle..noise.joint_angle);
+        if let Some((min, max)) = angle_limits {
+            angle = angle.clamp(min, max);
         }
-        let angle = rand::random_range(-noise.joint_angle..noise.joint_angle);
         joint_angles.insert(joint.name.clone(), angle);
     }
-    apply_revolute_angles(creature, &joint_angles);
+
+    let mut poses = compute_body_poses(morphology, &joint_angles);
 
     let yaw = rand::random_range(-noise.yaw..noise.yaw);
     let pitch = rand::random_range(-noise.pitch..noise.pitch);
@@ -53,12 +68,11 @@ pub fn apply_dog_spawn_noise(creature: &mut CreatureDesc, noise: &DogSpawnNoise)
         rand::random_range(-noise.position_xy..noise.position_xy),
     );
 
-    let pivot = creature
-        .bodies
-        .iter()
-        .find(|body| body.name == "torso")
-        .map(|body| body.pose.translation)
+    let pivot = poses
+        .get("torso")
+        .map(|pose| pose.translation)
         .unwrap_or(Vec3::ZERO);
 
-    transform_creature_poses(creature, pivot, translation, rotation);
+    transform_body_poses(&mut poses, pivot, translation, rotation);
+    poses
 }

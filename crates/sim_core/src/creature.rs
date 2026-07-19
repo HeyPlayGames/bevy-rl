@@ -1,7 +1,8 @@
 //! Creature articulation description.
 //!
-//! Avian solves joints; this format owns the authoring graph (bodies + joints)
-//! that we expand into rigid bodies at spawn time.
+//! Bodies are authored as a kinematic tree: a root pose plus per-body bind
+//! rotations, with child placement implied by joint anchors and angles.
+//! Absolute poses are computed via forward kinematics at spawn / edit time.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -15,10 +16,16 @@ pub struct CreatureInstance {
     pub joints: HashMap<String, Entity>,
 }
 
+/// Absolute body poses in creature-local space (from [`compute_body_poses`]).
+pub type BodyPoseMap = HashMap<String, Transform>;
+
 /// Serializable / builder description of an articulated creature.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreatureDesc {
     pub name: String,
+    /// Pose of the articulation root body (creature-local, before world origin).
+    #[serde(default)]
+    pub root_pose: Transform,
     pub bodies: Vec<BodyDesc>,
     pub joints: Vec<JointDesc>,
 }
@@ -27,9 +34,15 @@ impl CreatureDesc {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            root_pose: Transform::IDENTITY,
             bodies: Vec::new(),
             joints: Vec::new(),
         }
+    }
+
+    pub fn root_pose(mut self, translation: Vec3, rotation: Quat) -> Self {
+        self.root_pose = Transform::from_translation(translation).with_rotation(rotation);
+        self
     }
 
     pub fn body(mut self, body: BodyDesc) -> Self {
@@ -43,87 +56,174 @@ impl CreatureDesc {
     }
 }
 
-/// Applies revolute joint angles (radians) to body poses via forward kinematics.
-///
-/// Joints are processed parent-before-child. Missing names are skipped. When a
-/// joint has angle limits, the requested angle is clamped into that range.
-pub fn apply_revolute_angles(creature: &mut CreatureDesc, angles: &HashMap<String, f32>) {
-    if angles.is_empty() {
-        return;
-    }
-
-    let order = revolute_joint_topology_order(creature);
-    for joint_index in order {
-        let joint = &creature.joints[joint_index];
-        let Some(&requested) = angles.get(&joint.name) else {
-            continue;
-        };
-        let JointKind::Revolute { axis, angle_limits } = &joint.kind else {
-            continue;
-        };
-
-        let angle = match *angle_limits {
-            Some((min, max)) => requested.clamp(min, max),
-            None => requested,
-        };
-        if angle.abs() < 1e-8 {
-            continue;
-        }
-
-        let body_a_name = joint.body_a.clone();
-        let body_b_name = joint.body_b.clone();
-        let anchor_a = joint.anchor_a;
-        let axis = *axis;
-
-        let body_a_index = body_index(creature, &body_a_name);
-        let Some(body_a_index) = body_a_index else {
-            continue;
-        };
-        let pose_a = creature.bodies[body_a_index].pose;
-        let pivot = pose_a.translation + pose_a.rotation * anchor_a;
-        let world_axis = (pose_a.rotation * axis).normalize_or_zero();
-        if world_axis.length_squared() < 1e-8 {
-            continue;
-        }
-        let delta = Quat::from_axis_angle(world_axis, angle);
-
-        let descendants = body_descendants(creature, &body_b_name);
-        for body_name in descendants {
-            let Some(index) = body_index(creature, &body_name) else {
-                continue;
-            };
-            let pose = &mut creature.bodies[index].pose;
-            pose.translation = pivot + delta * (pose.translation - pivot);
-            pose.rotation = (delta * pose.rotation).normalize();
-        }
-    }
+fn quat_identity() -> Quat {
+    Quat::IDENTITY
 }
 
-/// Applies a rigid transform to every body about `pivot` (creature-local).
-pub fn transform_creature_poses(
-    creature: &mut CreatureDesc,
+/// Name of the articulation root (body that never appears as a joint child).
+pub fn articulation_root_name(creature: &CreatureDesc) -> Option<&str> {
+    let mut child_bodies = std::collections::HashSet::new();
+    for joint in &creature.joints {
+        child_bodies.insert(joint.body_b.as_str());
+    }
+    creature
+        .bodies
+        .iter()
+        .find(|body| !child_bodies.contains(body.name.as_str()))
+        .map(|body| body.name.as_str())
+}
+
+/// Revolute angles used as the standing / zero-action pose.
+pub fn default_revolute_angles(creature: &CreatureDesc) -> HashMap<String, f32> {
+    creature
+        .joints
+        .iter()
+        .filter_map(|joint| {
+            joint
+                .kind
+                .default_angle()
+                .map(|angle| (joint.name.clone(), angle))
+        })
+        .collect()
+}
+
+/// Forward-kinematics absolute poses from the joint tree.
+///
+/// Missing angle entries are treated as `0`. Revolute angles are clamped to
+/// limits when present. Child translation is solved so joint anchors coincide;
+/// child orientation is `parent * hinge(angle) * bind_rotation`.
+pub fn compute_body_poses(creature: &CreatureDesc, angles: &HashMap<String, f32>) -> BodyPoseMap {
+    let mut poses = BodyPoseMap::with_capacity(creature.bodies.len());
+    let Some(root_name) = articulation_root_name(creature) else {
+        return poses;
+    };
+    poses.insert(root_name.to_string(), creature.root_pose.with_scale(Vec3::ONE));
+
+    let order = joint_topology_order(creature);
+    for joint_index in order {
+        let joint = &creature.joints[joint_index];
+        let Some(pose_a) = poses.get(&joint.body_a).copied() else {
+            continue;
+        };
+        let Some(body_b) = creature.bodies.iter().find(|body| body.name == joint.body_b) else {
+            continue;
+        };
+
+        let hinge = match &joint.kind {
+            JointKind::Revolute {
+                axis,
+                angle_limits,
+                ..
+            } => {
+                let requested = angles.get(&joint.name).copied().unwrap_or(0.0);
+                let angle = match *angle_limits {
+                    Some((min, max)) => requested.clamp(min, max),
+                    None => requested,
+                };
+                let axis = axis.normalize_or_zero();
+                if axis.length_squared() < 1e-8 || angle.abs() < 1e-8 {
+                    Quat::IDENTITY
+                } else {
+                    Quat::from_axis_angle(axis, angle)
+                }
+            }
+            JointKind::Spherical { .. } | JointKind::Fixed => Quat::IDENTITY,
+        };
+
+        let rotation_b = (pose_a.rotation * hinge * body_b.bind_rotation).normalize();
+        let translation_b =
+            pose_a.translation + pose_a.rotation * joint.anchor_a - rotation_b * joint.anchor_b;
+        poses.insert(
+            joint.body_b.clone(),
+            Transform {
+                translation: translation_b,
+                rotation: rotation_b,
+                scale: Vec3::ONE,
+            },
+        );
+    }
+
+    // Bodies with no path from the root keep identity (should not happen for a tree).
+    for body in &creature.bodies {
+        poses
+            .entry(body.name.clone())
+            .or_insert(Transform::IDENTITY);
+    }
+    poses
+}
+
+/// Standing poses: FK with each revolute's [`JointKind::Revolute::default_angle`].
+pub fn compute_default_body_poses(creature: &CreatureDesc) -> BodyPoseMap {
+    compute_body_poses(creature, &default_revolute_angles(creature))
+}
+
+/// Joint-zero poses: FK with all revolute angles at 0.
+pub fn compute_zero_body_poses(creature: &CreatureDesc) -> BodyPoseMap {
+    compute_body_poses(creature, &HashMap::new())
+}
+
+/// Applies a rigid transform to every pose about `pivot` (creature-local).
+pub fn transform_body_poses(
+    poses: &mut BodyPoseMap,
     pivot: Vec3,
     translation: Vec3,
     rotation: Quat,
 ) {
     let rotation = rotation.normalize();
-    for body in &mut creature.bodies {
-        body.pose.translation = pivot + rotation * (body.pose.translation - pivot) + translation;
-        body.pose.rotation = (rotation * body.pose.rotation).normalize();
+    for pose in poses.values_mut() {
+        pose.translation = pivot + rotation * (pose.translation - pivot) + translation;
+        pose.rotation = (rotation * pose.rotation).normalize();
     }
 }
 
-fn body_index(creature: &CreatureDesc, name: &str) -> Option<usize> {
-    creature.bodies.iter().position(|body| body.name == name)
+/// Writes an absolute body pose back into the authoring graph at joint angle 0.
+///
+/// For the root, updates [`CreatureDesc::root_pose`]. For a child, updates that
+/// body's [`BodyDesc::bind_rotation`] and the parent joint's `anchor_a` so the
+/// anchors stay coincident at the new pose.
+pub fn set_body_pose_at_zero(creature: &mut CreatureDesc, body_name: &str, pose: Transform) {
+    let pose = Transform {
+        translation: pose.translation,
+        rotation: pose.rotation.normalize(),
+        scale: Vec3::ONE,
+    };
+
+    let Some(root_name) = articulation_root_name(creature).map(str::to_string) else {
+        return;
+    };
+    if body_name == root_name {
+        creature.root_pose = pose;
+        return;
+    }
+
+    let Some(joint_index) = creature
+        .joints
+        .iter()
+        .position(|joint| joint.body_b == body_name)
+    else {
+        return;
+    };
+
+    let zero_poses = compute_zero_body_poses(creature);
+    let Some(pose_a) = zero_poses.get(&creature.joints[joint_index].body_a).copied() else {
+        return;
+    };
+
+    let anchor_b = creature.joints[joint_index].anchor_b;
+    let bind_rotation = (pose_a.rotation.inverse() * pose.rotation).normalize();
+    let anchor_a =
+        pose_a.rotation.inverse() * (pose.translation + pose.rotation * anchor_b - pose_a.translation);
+
+    if let Some(body) = creature.bodies.iter_mut().find(|body| body.name == body_name) {
+        body.bind_rotation = bind_rotation;
+    }
+    creature.joints[joint_index].anchor_a = anchor_a;
 }
 
-fn revolute_joint_topology_order(creature: &CreatureDesc) -> Vec<usize> {
+fn joint_topology_order(creature: &CreatureDesc) -> Vec<usize> {
     let mut child_bodies = std::collections::HashSet::new();
     let mut joints_by_parent: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, joint) in creature.joints.iter().enumerate() {
-        if !matches!(joint.kind, JointKind::Revolute { .. }) {
-            continue;
-        }
         child_bodies.insert(joint.body_b.clone());
         joints_by_parent
             .entry(joint.body_a.clone())
@@ -155,38 +255,16 @@ fn revolute_joint_topology_order(creature: &CreatureDesc) -> Vec<usize> {
     order
 }
 
-fn body_descendants(creature: &CreatureDesc, root: &str) -> Vec<String> {
-    let mut children: HashMap<String, Vec<String>> = HashMap::new();
-    for joint in &creature.joints {
-        children
-            .entry(joint.body_a.clone())
-            .or_default()
-            .push(joint.body_b.clone());
-    }
-
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_string()];
-    let mut seen = std::collections::HashSet::new();
-    while let Some(name) = stack.pop() {
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        out.push(name.clone());
-        if let Some(child_names) = children.get(&name) {
-            stack.extend(child_names.iter().cloned());
-        }
-    }
-    out
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BodyDesc {
     pub name: String,
     pub shape: BodyShape,
     /// Density used for mass properties (kg / m^3-ish; Avian density units).
     pub density: f32,
-    /// Pose relative to the creature root (env-local, before world origin).
-    pub pose: PoseDesc,
+    /// Orientation relative to the parent body at revolute angle 0.
+    /// Ignored for the articulation root ([`CreatureDesc::root_pose`] owns that).
+    #[serde(default = "quat_identity")]
+    pub bind_rotation: Quat,
 }
 
 impl BodyDesc {
@@ -195,7 +273,7 @@ impl BodyDesc {
             name: name.into(),
             shape,
             density: 200.0,
-            pose: PoseDesc::default(),
+            bind_rotation: Quat::IDENTITY,
         }
     }
 
@@ -204,16 +282,8 @@ impl BodyDesc {
         self
     }
 
-    pub fn pose(mut self, translation: Vec3, rotation: Quat) -> Self {
-        self.pose = PoseDesc {
-            translation,
-            rotation,
-        };
-        self
-    }
-
-    pub fn at(mut self, translation: Vec3) -> Self {
-        self.pose.translation = translation;
+    pub fn bind_rotation(mut self, rotation: Quat) -> Self {
+        self.bind_rotation = rotation.normalize();
         self
     }
 }
@@ -235,21 +305,6 @@ pub enum BodyShape {
     Sphere {
         radius: f32,
     },
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct PoseDesc {
-    pub translation: Vec3,
-    pub rotation: Quat,
-}
-
-impl Default for PoseDesc {
-    fn default() -> Self {
-        Self {
-            translation: Vec3::ZERO,
-            rotation: Quat::IDENTITY,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -280,6 +335,7 @@ impl JointDesc {
             kind: JointKind::Revolute {
                 axis,
                 angle_limits: None,
+                default_angle: 0.0,
             },
         }
     }
@@ -308,10 +364,23 @@ impl JointDesc {
     pub fn with_angle_limits(mut self, min: f32, max: f32) -> Self {
         if let JointKind::Revolute {
             ref mut angle_limits,
+            ref mut default_angle,
             ..
         } = self.kind
         {
             *angle_limits = Some((min, max));
+            *default_angle = 0.5 * (min + max);
+        }
+        self
+    }
+
+    pub fn with_default_angle(mut self, angle: f32) -> Self {
+        if let JointKind::Revolute {
+            ref mut default_angle,
+            ..
+        } = self.kind
+        {
+            *default_angle = angle;
         }
         self
     }
@@ -322,6 +391,8 @@ pub enum JointKind {
     Revolute {
         axis: Vec3,
         angle_limits: Option<(f32, f32)>,
+        /// Standing / zero-action pose. Mapped to [`crate::ActuatedRevolute::rest_angle`].
+        default_angle: f32,
     },
     Spherical {
         twist_axis: Vec3,
@@ -329,4 +400,124 @@ pub enum JointKind {
         twist_limits: Option<(f32, f32)>,
     },
     Fixed,
+}
+
+impl JointKind {
+    /// Revolute default angle, if this is a revolute joint.
+    pub fn default_angle(&self) -> Option<f32> {
+        match self {
+            Self::Revolute { default_angle, .. } => Some(*default_angle),
+            _ => None,
+        }
+    }
+}
+
+/// Marks every revolute joint as actuated, holding `default_angle` at action `0`.
+///
+/// Action indices follow morphology joint order (revolutes only). Used by the
+/// morphology studio physics preview; training creatures may attach a subset.
+pub fn attach_default_revolute_actuation(
+    commands: &mut Commands,
+    instance: &CreatureInstance,
+    creature: &CreatureDesc,
+) {
+    let mut action_index = 0usize;
+    for joint in &creature.joints {
+        let JointKind::Revolute { default_angle, .. } = joint.kind else {
+            continue;
+        };
+        let Some(&joint_entity) = instance.joints.get(&joint.name) else {
+            continue;
+        };
+        commands.entity(joint_entity).insert((
+            crate::ActuatedRevolute {
+                action_index,
+                rest_angle: default_angle,
+            },
+            crate::JointTargetAngle(0.0),
+        ));
+        action_index += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_leg() -> CreatureDesc {
+        CreatureDesc::new("test")
+            .root_pose(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY)
+            .body(BodyDesc::new(
+                "torso",
+                BodyShape::Cuboid {
+                    half_extents: Vec3::splat(0.1),
+                },
+            ))
+            .body(
+                BodyDesc::new(
+                    "upper",
+                    BodyShape::Capsule {
+                        radius: 0.05,
+                        length: 0.2,
+                    },
+                )
+                .bind_rotation(Quat::IDENTITY),
+            )
+            .body(BodyDesc::new(
+                "lower",
+                BodyShape::Capsule {
+                    radius: 0.04,
+                    length: 0.2,
+                },
+            ))
+            .joint(
+                JointDesc::revolute(
+                    "hip",
+                    "torso",
+                    "upper",
+                    Vec3::new(0.0, -0.1, 0.0),
+                    Vec3::new(0.0, 0.1, 0.0),
+                    Vec3::Z,
+                )
+                .with_default_angle(0.5),
+            )
+            .joint(JointDesc::revolute(
+                "knee",
+                "upper",
+                "lower",
+                Vec3::new(0.0, -0.1, 0.0),
+                Vec3::new(0.0, 0.1, 0.0),
+                Vec3::Z,
+            ))
+    }
+
+    #[test]
+    fn zero_poses_keep_anchors_coincident() {
+        let creature = sample_leg();
+        let poses = compute_zero_body_poses(&creature);
+        for joint in &creature.joints {
+            let pose_a = poses[&joint.body_a];
+            let pose_b = poses[&joint.body_b];
+            let world_a = pose_a.translation + pose_a.rotation * joint.anchor_a;
+            let world_b = pose_b.translation + pose_b.rotation * joint.anchor_b;
+            assert!(
+                world_a.distance(world_b) < 1e-5,
+                "joint {} anchors separated by {}",
+                joint.name,
+                world_a.distance(world_b)
+            );
+        }
+    }
+
+    #[test]
+    fn default_angle_rotates_about_parent_axis() {
+        let creature = sample_leg();
+        let zero = compute_zero_body_poses(&creature);
+        let posed = compute_default_body_poses(&creature);
+        let upper_zero = zero["upper"].rotation;
+        let upper_posed = posed["upper"].rotation;
+        let expected = Quat::from_axis_angle(Vec3::Z, 0.5) * upper_zero;
+        let delta = (upper_posed.inverse() * expected).normalize();
+        assert!(delta.xyz().length() < 1e-4, "unexpected upper rotation {delta:?}");
+    }
 }

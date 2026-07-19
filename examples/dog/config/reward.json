@@ -3,6 +3,7 @@
   "height_tolerance": 0.25,
   "upright_weight": 1.0,
   "height_weight": 1.0,
+  "stance_weight": 0.5,
   "min_height": 0.3,
   "min_upright": 0.65,
   "fall_penalty": -1.0

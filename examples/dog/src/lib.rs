@@ -1,20 +1,24 @@
 //! Example creature pack: dog quadruped on flat ground.
 
+mod contacts;
 mod env;
 mod morphology;
 mod reward;
 mod spawn_noise;
 
 pub use env::{spawn_dog_ground_env, DogGroundPlugin};
-pub use morphology::{dog_quadruped_desc, DOG_ACTION_DIM, DOG_OBS_DIM};
+pub use morphology::{
+    actuated_joint_names, dog_morphology_path, load_dog_morphology, load_dog_morphology_from,
+    DogMorphology, DOG_ACTION_DIM, DOG_OBS_DIM,
+};
 pub use reward::{dog_balance_reward, dog_has_fallen, DogBalanceConfig};
-pub use spawn_noise::{apply_dog_spawn_noise, DogSpawnNoise};
+pub use spawn_noise::{sample_dog_spawn_poses, DogSpawnNoise};
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use sim_core::prelude::*;
 
-use morphology::actuated_joint_names;
+use contacts::{update_dog_contacts, DogContactBuffer, DogGroundContacts};
 
 /// Creature id used for checkpoints and policy metadata.
 pub const CREATURE_ID: &str = "dog";
@@ -26,6 +30,16 @@ pub struct DogPlugin;
 
 impl Plugin for DogPlugin {
     fn build(&self, app: &mut App) {
+        let morphology = match load_dog_morphology() {
+            Ok(creature) => DogMorphology(creature),
+            Err(error) => {
+                panic!(
+                    "failed to load dog morphology from {}: {error}",
+                    dog_morphology_path().display()
+                );
+            }
+        };
+
         let reward_config = match DogBalanceConfig::load_default() {
             Ok(config) => config,
             Err(error) => {
@@ -34,37 +48,54 @@ impl Plugin for DogPlugin {
             }
         };
 
-        app.insert_resource(CreatureSpec {
-            id: CREATURE_ID,
-            observation_dim: DOG_OBS_DIM,
-            action_dim: DOG_ACTION_DIM,
-        })
-        .insert_resource(reward_config)
-        .add_plugins(DogGroundPlugin)
-        .add_systems(
-            FixedLast,
-            (
-                write_dog_observations,
-                write_dog_rewards,
-                advance_and_reset_episodes,
-                // Soft resets rewrite poses in-place; refresh obs so the next
-                // policy step sees the post-reset standing state.
-                refresh_dog_observations_after_reset,
-            )
-                .chain(),
-        );
+        app.insert_resource(morphology)
+            .insert_resource(CreatureSpec {
+                id: CREATURE_ID,
+                observation_dim: DOG_OBS_DIM,
+                action_dim: DOG_ACTION_DIM,
+            })
+            .insert_resource(reward_config)
+            .init_resource::<DogContactBuffer>()
+            .add_plugins(DogGroundPlugin)
+            .add_systems(
+                FixedLast,
+                (
+                    update_dog_contacts,
+                    write_dog_observations,
+                    write_dog_rewards,
+                    advance_and_reset_episodes,
+                    // Soft resets rewrite poses in-place; refresh obs so the next
+                    // policy step sees the post-reset standing state.
+                    refresh_dog_observations_after_reset,
+                )
+                    .chain(),
+            );
     }
 }
 
-pub fn attach_dog_actuation(commands: &mut Commands, instance: &CreatureInstance) {
+pub fn attach_dog_actuation(
+    commands: &mut Commands,
+    instance: &CreatureInstance,
+    morphology: &CreatureDesc,
+) {
     for (action_index, joint_name) in actuated_joint_names().iter().enumerate() {
         let Some(&joint_entity) = instance.joints.get(*joint_name) else {
+            continue;
+        };
+        let Some(joint) = morphology
+            .joints
+            .iter()
+            .find(|joint| joint.name == *joint_name)
+        else {
+            continue;
+        };
+        let Some(default_angle) = joint.kind.default_angle() else {
             continue;
         };
         commands.entity(joint_entity).insert((
             ActuatedRevolute {
                 action_index,
-                rest_angle: 0.0,
+                rest_angle: default_angle,
             },
             JointTargetAngle(0.0),
         ));
@@ -79,6 +110,7 @@ pub fn mark_dog_root(commands: &mut Commands, env_id: EnvId, instance: &Creature
 
 fn write_dog_observations(
     mut buffers: ResMut<RlBuffers>,
+    contacts: Res<DogContactBuffer>,
     roots: Query<(Entity, &CreatureRoot)>,
     bodies: Query<(&Transform, &LinearVelocity, &AngularVelocity)>,
     joints: Query<(&RevoluteJoint, &ActuatedRevolute, &SimJoint)>,
@@ -107,6 +139,11 @@ fn write_dog_observations(
         let local_angular_velocity = inverse_rotation * angular_velocity.0;
 
         let previous_actions = buffers.actions.get(env_index).cloned().unwrap_or_default();
+        let ground_contacts = contacts
+            .envs
+            .get(env_index)
+            .copied()
+            .unwrap_or_default();
 
         let observation = &mut buffers.observations[env_index];
         observation.fill(0.0);
@@ -159,7 +196,10 @@ fn write_dog_observations(
             observation[height_index] = transform.translation.y;
         }
 
-        let previous_action_offset = height_index + 1;
+        let contact_offset = height_index + 1;
+        ground_contacts.write_observation(observation, contact_offset);
+
+        let previous_action_offset = contact_offset + 4;
         if previous_action_offset + DOG_ACTION_DIM <= observation.len() {
             let copy_length = DOG_ACTION_DIM.min(previous_actions.len());
             observation[previous_action_offset..previous_action_offset + copy_length]
@@ -172,6 +212,7 @@ fn write_dog_observations(
 /// the post-reset standing state instead of the pre-reset fallen state.
 fn refresh_dog_observations_after_reset(
     buffers: ResMut<RlBuffers>,
+    contacts: Res<DogContactBuffer>,
     roots: Query<(Entity, &CreatureRoot)>,
     bodies: Query<(&Transform, &LinearVelocity, &AngularVelocity)>,
     joints: Query<(&RevoluteJoint, &ActuatedRevolute, &SimJoint)>,
@@ -180,6 +221,7 @@ fn refresh_dog_observations_after_reset(
 ) {
     write_dog_observations(
         buffers,
+        contacts,
         roots,
         bodies,
         joints,
@@ -190,6 +232,7 @@ fn refresh_dog_observations_after_reset(
 
 fn write_dog_rewards(
     mut buffers: ResMut<RlBuffers>,
+    contacts: Res<DogContactBuffer>,
     config: Res<DogBalanceConfig>,
     roots: Query<(Entity, &CreatureRoot)>,
     bodies: Query<&Transform>,
@@ -209,10 +252,17 @@ fn write_dog_rewards(
             continue;
         };
 
+        let ground_contacts = contacts
+            .envs
+            .get(env_index)
+            .copied()
+            .unwrap_or_default();
+
         buffers.rewards[env_index] = dog_balance_reward(
             &config,
             transform.rotation * Vec3::Y,
             transform.translation.y,
+            ground_contacts,
         );
     }
 }
@@ -222,6 +272,7 @@ fn soft_reset_dog_env(
     env_id: EnvId,
     isolation: &EnvIsolationConfig,
     spawn_noise: &DogSpawnNoise,
+    morphology: &CreatureDesc,
     bodies: &mut Query<(
         Entity,
         &SimBody,
@@ -234,10 +285,9 @@ fn soft_reset_dog_env(
     )>,
     joint_targets: &mut Query<(&SimJoint, &mut JointTargetAngle)>,
 ) {
-    let mut dog = dog_quadruped_desc();
-    apply_dog_spawn_noise(&mut dog, spawn_noise);
+    let poses = sample_dog_spawn_poses(morphology, spawn_noise);
     let world_origin = env_origin(env_id, isolation);
-    soft_reset_creature(commands, env_id, world_origin, &dog, bodies, joint_targets);
+    soft_reset_creature(commands, env_id, world_origin, &poses, bodies, joint_targets);
 }
 
 /// Soft-reset every dog env with spawn-pose noise.
@@ -247,8 +297,10 @@ fn soft_reset_dog_env(
 pub fn reset_all_envs(
     mut commands: Commands,
     mut buffers: ResMut<RlBuffers>,
+    mut contacts: ResMut<DogContactBuffer>,
     isolation: Res<EnvIsolationConfig>,
     spawn_noise: Res<DogSpawnNoise>,
+    morphology: Res<DogMorphology>,
     mut bodies: Query<(
         Entity,
         &SimBody,
@@ -262,6 +314,7 @@ pub fn reset_all_envs(
     mut joint_targets: Query<(&SimJoint, &mut JointTargetAngle)>,
 ) {
     let env_count = buffers.episode_steps.len();
+    contacts.envs.resize(env_count, DogGroundContacts::default());
     for env_index in 0..env_count {
         let env_id = EnvId::new(env_index as u32);
         soft_reset_dog_env(
@@ -269,6 +322,7 @@ pub fn reset_all_envs(
             env_id,
             &isolation,
             &spawn_noise,
+            &morphology.0,
             &mut bodies,
             &mut joint_targets,
         );
@@ -279,16 +333,21 @@ pub fn reset_all_envs(
         if let Some(actions) = buffers.actions.get_mut(env_index) {
             actions.fill(0.0);
         }
+        if let Some(env_contacts) = contacts.envs.get_mut(env_index) {
+            *env_contacts = DogGroundContacts::default();
+        }
     }
 }
 
 fn advance_and_reset_episodes(
     mut commands: Commands,
     mut buffers: ResMut<RlBuffers>,
+    mut contacts: ResMut<DogContactBuffer>,
     reset_policy: Res<EpisodeResetPolicy>,
     config: Res<DogBalanceConfig>,
     isolation: Res<EnvIsolationConfig>,
     spawn_noise: Res<DogSpawnNoise>,
+    morphology: Res<DogMorphology>,
     mut pose_queries: ParamSet<(
         Query<(&CreatureRoot, &Transform)>,
         Query<(
@@ -356,12 +415,19 @@ fn advance_and_reset_episodes(
             continue;
         }
 
+        // Contact graph is stale until the next physics step; clear so the
+        // post-reset observation does not keep fallen-body contacts.
+        if let Some(env_contacts) = contacts.envs.get_mut(env_index) {
+            *env_contacts = DogGroundContacts::default();
+        }
+
         let env_id = EnvId::new(env_index as u32);
         soft_reset_dog_env(
             &mut commands,
             env_id,
             &isolation,
             &spawn_noise,
+            &morphology.0,
             &mut pose_queries.p1(),
             &mut joint_targets,
         );

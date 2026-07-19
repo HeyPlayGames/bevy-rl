@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use sim_core::prelude::*;
 
 use crate::{
-    apply_dog_spawn_noise, attach_dog_actuation, dog_quadruped_desc, mark_dog_root, DogSpawnNoise,
+    attach_dog_actuation, mark_dog_root, sample_dog_spawn_poses, DogMorphology, DogSpawnNoise,
 };
 
 /// Flat ground + dog quadruped batch spawning.
@@ -22,6 +22,7 @@ fn spawn_requested_batch(
     batch: Option<Res<SpawnEnvBatch>>,
     isolation: Res<EnvIsolationConfig>,
     spawn_noise: Res<DogSpawnNoise>,
+    morphology: Res<DogMorphology>,
 ) {
     let Some(batch) = batch else {
         return;
@@ -33,6 +34,7 @@ fn spawn_requested_batch(
             &isolation,
             batch.interpolate,
             &spawn_noise,
+            &morphology.0,
         );
     }
 }
@@ -42,6 +44,7 @@ fn handle_respawn_all_envs(
     mut messages: MessageReader<RespawnAllEnvs>,
     isolation: Res<EnvIsolationConfig>,
     spawn_noise: Res<DogSpawnNoise>,
+    morphology: Res<DogMorphology>,
     roots: Query<(Entity, &EnvRoot)>,
     bodies: Query<(Entity, &SimBody)>,
     joints: Query<(Entity, &SimJoint)>,
@@ -72,6 +75,7 @@ fn handle_respawn_all_envs(
             &isolation,
             request.interpolate,
             &spawn_noise,
+            &morphology.0,
         );
     }
 }
@@ -83,15 +87,24 @@ pub fn spawn_dog_ground_env(
     isolation: &EnvIsolationConfig,
     interpolate: bool,
     spawn_noise: &DogSpawnNoise,
+    morphology: &CreatureDesc,
 ) {
     let origin = env_origin(env_id, isolation);
 
     let _root = spawn_env_root(commands, env_id, isolation);
     spawn_flat_ground(commands, env_id, isolation);
 
-    let mut dog = dog_quadruped_desc();
-    apply_dog_spawn_noise(&mut dog, spawn_noise);
-    let instance = spawn_creature(commands, env_id, origin, &dog, interpolate);
-    attach_dog_actuation(commands, &instance);
+    let placement = sample_dog_spawn_poses(morphology, spawn_noise);
+    let joint_zero = compute_zero_body_poses(morphology);
+    let instance = spawn_creature(
+        commands,
+        env_id,
+        origin,
+        morphology,
+        &placement,
+        &joint_zero,
+        interpolate,
+    );
+    attach_dog_actuation(commands, &instance, morphology);
     mark_dog_root(commands, env_id, &instance);
 }

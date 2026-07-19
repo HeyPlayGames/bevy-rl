@@ -1,4 +1,4 @@
 {
-  "hidden_dims": [2048, 1024, 512, 256],
+  "hidden_dims": [512, 256, 128],
   "initial_log_std": -0.5
 }

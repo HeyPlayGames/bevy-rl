@@ -1,0 +1,274 @@
+CreatureDesc(
+  name: "dog",
+  root_pose: Transform(
+    translation: Vec3(0.0, 0.637, 0.0),
+    rotation: Quat(0.0, 0.0, 0.0, 1.0),
+    scale: Vec3(1.0, 1.0, 1.0),
+  ),
+  bodies: [
+    BodyDesc(
+      name: "torso",
+      shape: Cuboid(
+        half_extents: Vec3(0.35, 0.08, 0.18),
+      ),
+      density: 250.0,
+      bind_rotation: Quat(0.0, 0.0, 0.0, 1.0),
+    ),
+    BodyDesc(
+      name: "fl_hip",
+      shape: Capsule(
+        radius: 0.055,
+        length: 0.22,
+      ),
+      density: 200.0,
+      // Horizontal hip capsule at joint angle 0 (+90° about X relative to torso).
+      bind_rotation: Quat(0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "fl_upper",
+      shape: Capsule(
+        radius: 0.05,
+        length: 0.28,
+      ),
+      density: 220.0,
+      // Undo hip bind so the upper leg hangs along world -Y at angle 0.
+      bind_rotation: Quat(-0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "fl_lower",
+      shape: Capsule(
+        radius: 0.045,
+        length: 0.28,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(0.0, 0.0, 0.0, 1.0),
+    ),
+    BodyDesc(
+      name: "fr_hip",
+      shape: Capsule(
+        radius: 0.055,
+        length: 0.22,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(-0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "fr_upper",
+      shape: Capsule(
+        radius: 0.05,
+        length: 0.28,
+      ),
+      density: 220.0,
+      bind_rotation: Quat(0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "fr_lower",
+      shape: Capsule(
+        radius: 0.045,
+        length: 0.28,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(0.0, 0.0, 0.0, 1.0),
+    ),
+    BodyDesc(
+      name: "bl_hip",
+      shape: Capsule(
+        radius: 0.055,
+        length: 0.22,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "bl_upper",
+      shape: Capsule(
+        radius: 0.05,
+        length: 0.28,
+      ),
+      density: 220.0,
+      bind_rotation: Quat(-0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "bl_lower",
+      shape: Capsule(
+        radius: 0.045,
+        length: 0.28,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(0.0, 0.0, 0.0, 1.0),
+    ),
+    BodyDesc(
+      name: "br_hip",
+      shape: Capsule(
+        radius: 0.055,
+        length: 0.22,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(-0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "br_upper",
+      shape: Capsule(
+        radius: 0.05,
+        length: 0.28,
+      ),
+      density: 220.0,
+      bind_rotation: Quat(0.70710677, 0.0, 0.0, 0.70710677),
+    ),
+    BodyDesc(
+      name: "br_lower",
+      shape: Capsule(
+        radius: 0.045,
+        length: 0.28,
+      ),
+      density: 200.0,
+      bind_rotation: Quat(0.0, 0.0, 0.0, 1.0),
+    ),
+  ],
+  joints: [
+    JointDesc(
+      name: "fl_hip_abduct",
+      body_a: "torso",
+      body_b: "fl_hip",
+      anchor_a: Vec3(0.22, 0.0, 0.18),
+      anchor_b: Vec3(0.0, -0.11, 0.0),
+      kind: Revolute(
+        axis: Vec3(1.0, 0.0, 0.0),
+        angle_limits: Some((-0.3, 0.3)),
+        default_angle: 0.0,
+      ),
+    ),
+    JointDesc(
+      name: "fl_hip_flex",
+      body_a: "fl_hip",
+      body_b: "fl_upper",
+      anchor_a: Vec3(0.0, 0.11, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, 1.0, 0.0),
+        angle_limits: Some((-1.5, 0.0)),
+        default_angle: -1.0,
+      ),
+    ),
+    JointDesc(
+      name: "fl_knee",
+      body_a: "fl_upper",
+      body_b: "fl_lower",
+      anchor_a: Vec3(0.0, -0.14, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, 0.0, 1.0),
+        angle_limits: Some((0.0, 1.5)),
+        default_angle: 1.5,
+      ),
+    ),
+    JointDesc(
+      name: "fr_hip_abduct",
+      body_a: "torso",
+      body_b: "fr_hip",
+      anchor_a: Vec3(0.22, 0.0, -0.18),
+      anchor_b: Vec3(0.0, -0.11, 0.0),
+      kind: Revolute(
+        axis: Vec3(-1.0, 0.0, 0.0),
+        angle_limits: Some((-0.3, 0.3)),
+        default_angle: 0.0,
+      ),
+    ),
+    JointDesc(
+      name: "fr_hip_flex",
+      body_a: "fr_hip",
+      body_b: "fr_upper",
+      anchor_a: Vec3(0.0, 0.11, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, -1.0, 0.0),
+        angle_limits: Some((-1.5, 0.0)),
+        default_angle: -1.0,
+      ),
+    ),
+    JointDesc(
+      name: "fr_knee",
+      body_a: "fr_upper",
+      body_b: "fr_lower",
+      anchor_a: Vec3(0.0, -0.14, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, 0.0, 1.0),
+        angle_limits: Some((0.0, 1.5)),
+        default_angle: 1.5,
+      ),
+    ),
+    JointDesc(
+      name: "bl_hip_abduct",
+      body_a: "torso",
+      body_b: "bl_hip",
+      anchor_a: Vec3(-0.22, 0.0, 0.18),
+      anchor_b: Vec3(0.0, -0.11, 0.0),
+      kind: Revolute(
+        axis: Vec3(1.0, 0.0, 0.0),
+        angle_limits: Some((-0.3, 0.3)),
+        default_angle: 0.0,
+      ),
+    ),
+    JointDesc(
+      name: "bl_hip_flex",
+      body_a: "bl_hip",
+      body_b: "bl_upper",
+      anchor_a: Vec3(0.0, 0.11, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, 1.0, 0.0),
+        angle_limits: Some((-1.5, 0.0)),
+        default_angle: -1.0,
+      ),
+    ),
+    JointDesc(
+      name: "bl_knee",
+      body_a: "bl_upper",
+      body_b: "bl_lower",
+      anchor_a: Vec3(0.0, -0.14, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, 0.0, 1.0),
+        angle_limits: Some((0.0, 1.5)),
+        default_angle: 1.5,
+      ),
+    ),
+    JointDesc(
+      name: "br_hip_abduct",
+      body_a: "torso",
+      body_b: "br_hip",
+      anchor_a: Vec3(-0.22, 0.0, -0.18),
+      anchor_b: Vec3(0.0, -0.11, 0.0),
+      kind: Revolute(
+        axis: Vec3(-1.0, 0.0, 0.0),
+        angle_limits: Some((-0.3, 0.3)),
+        default_angle: 0.0,
+      ),
+    ),
+    JointDesc(
+      name: "br_hip_flex",
+      body_a: "br_hip",
+      body_b: "br_upper",
+      anchor_a: Vec3(0.0, 0.11, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, -1.0, 0.0),
+        angle_limits: Some((-1.5, 0.0)),
+        default_angle: -1.0,
+      ),
+    ),
+    JointDesc(
+      name: "br_knee",
+      body_a: "br_upper",
+      body_b: "br_lower",
+      anchor_a: Vec3(0.0, -0.14, 0.0),
+      anchor_b: Vec3(0.0, 0.14, 0.0),
+      kind: Revolute(
+        axis: Vec3(0.0, 0.0, 1.0),
+        angle_limits: Some((0.0, 1.5)),
+        default_angle: 1.5,
+      ),
+    ),
+  ],
+)

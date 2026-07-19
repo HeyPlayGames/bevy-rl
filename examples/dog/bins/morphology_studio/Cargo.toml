@@ -1,0 +1,17 @@
+[package]
+name = "dog_morphology_studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dog example: visual morphology studio (load/save RON, gizmo edit bodies)"
+
+[[bin]]
+name = "dog_morphology_studio"
+path = "src/main.rs"
+
+[dependencies]
+dog = { path = "../.." }
+morphology_studio = { workspace = true }
+
+[lints]
+workspace = true

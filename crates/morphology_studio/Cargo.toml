@@ -1,0 +1,16 @@
+[package]
+name = "morphology_studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Visual morphology studio: gizmo-edit CreatureDesc, save/load RON, physics preview"
+
+[dependencies]
+avian3d = { workspace = true }
+bevy = { workspace = true, default-features = true, features = ["bevy_feathers"] }
+bevy_panorbit_camera = { workspace = true }
+rfd = { workspace = true }
+sim_core = { workspace = true }
+
+[lints]
+workspace = true

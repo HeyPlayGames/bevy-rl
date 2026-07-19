@@ -33,10 +33,15 @@ pub struct PpoTrainConfig {
     pub action_dim: usize,
     pub env_count: usize,
     pub total_updates: usize,
-    /// Full episode length; PPO trains on every step of the episode.
+    /// Policy steps per episode; PPO trains on every policy step.
+    /// Wall-clock length is `episode_horizon / policy_hz` seconds.
     pub episode_horizon: usize,
     pub load_path: Option<PathBuf>,
+    /// Physics fixed-timestep rate.
     pub fixed_hz: f64,
+    /// Policy decision rate. Each action is held for `round(fixed_hz / policy_hz)`
+    /// physics steps (default 60/20 → 3).
+    pub policy_hz: f64,
     pub isolation: EnvIsolationConfig,
     pub gravity: Vec3,
     pub ppo: PpoConfig,
@@ -50,9 +55,11 @@ impl Default for PpoTrainConfig {
             action_dim: 1,
             env_count: 16,
             total_updates: 50,
-            episode_horizon: 300,
+            // ~5s at 20 Hz policy (was 300 steps when policy was lockstep at 60 Hz).
+            episode_horizon: 100,
             load_path: None,
             fixed_hz: 60.0,
+            policy_hz: 20.0,
             isolation: EnvIsolationConfig {
                 spacing: 40.0,
                 grid_columns: 16,
@@ -78,6 +85,12 @@ pub fn run_ppo(
     let action_dim = config.action_dim;
     let episode_horizon = config.episode_horizon;
     let creature_id = config.creature_id;
+    let policy_control = PolicyControl {
+        physics_hz: config.fixed_hz,
+        policy_hz: config.policy_hz,
+    };
+    let action_repeat = policy_control.action_repeat() as usize;
+    let physics_episode_horizon = (episode_horizon * action_repeat) as u32;
 
     let headless = HeadlessSimConfig {
         fixed_hz: config.fixed_hz,
@@ -91,6 +104,7 @@ pub fn run_ppo(
     app.add_plugins(PhysicsPlugins::default())
         .add_plugins(SimCorePlugin {
             fixed_hz: headless.fixed_hz,
+            policy_hz: config.policy_hz,
             isolation: config.isolation.clone(),
             interpolate_transforms: false,
         })
@@ -117,7 +131,7 @@ pub fn run_ppo(
             env_count,
             observation_dim,
             action_dim,
-            episode_horizon as u32,
+            physics_episode_horizon,
         );
     }
 
@@ -172,7 +186,8 @@ pub fn run_ppo(
     }
 
     info!(
-        "trainer start: creature={creature_id} envs={env_count} updates={total_updates} episode_horizon={episode_horizon} obs={observation_dim} action={action_dim}"
+        "trainer start: creature={creature_id} envs={env_count} updates={total_updates} episode_horizon={episode_horizon} action_repeat={action_repeat} physics_hz={} policy_hz={} obs={observation_dim} action={action_dim}",
+        config.fixed_hz, config.policy_hz
     );
 
     let wall_clock = Instant::now();
@@ -186,6 +201,8 @@ pub fn run_ppo(
         if dashboard.should_stop() {
             break;
         }
+
+        let update_start = Instant::now();
 
         if let Err(error) = reset_all_envs(app.world_mut()) {
             error!("failed to reset envs before update {update_index}: {error}");
@@ -255,23 +272,48 @@ pub fn run_ppo(
                 buffers.actions.clone()
             };
 
-            app.update();
+            let mut reward_sum = vec![0.0_f32; env_count];
+            let mut terminations = vec![false; env_count];
+            let mut truncations = vec![false; env_count];
+            let mut step_done = vec![false; env_count];
 
-            let (rewards, terminations, truncations) = {
+            for _ in 0..action_repeat {
+                app.update();
+
                 let world = app.world();
                 let buffers = world.resource::<RlBuffers>();
-                (
-                    buffers.rewards.clone(),
-                    buffers.episode_terminated.clone(),
-                    buffers.episode_truncated.clone(),
-                )
-            };
+                for env_index in 0..env_count {
+                    if step_done[env_index] {
+                        continue;
+                    }
+                    if let Some(reward) = buffers.rewards.get(env_index) {
+                        reward_sum[env_index] += *reward;
+                    }
+                    let terminated = buffers
+                        .episode_terminated
+                        .get(env_index)
+                        .copied()
+                        .unwrap_or(false);
+                    let truncated = buffers
+                        .episode_truncated
+                        .get(env_index)
+                        .copied()
+                        .unwrap_or(false);
+                    if terminated {
+                        terminations[env_index] = true;
+                        step_done[env_index] = true;
+                    } else if truncated {
+                        truncations[env_index] = true;
+                        step_done[env_index] = true;
+                    }
+                }
+            }
 
             rollout.store_step(
                 step,
                 &observations,
                 &stored_actions,
-                &rewards,
+                &reward_sum,
                 &terminations,
                 &truncations,
             );
@@ -344,7 +386,14 @@ pub fn run_ppo(
         mean_episode_lengths.push(mean_episode_length);
         last_update_index = update_index;
         completed_any_update = true;
-        dashboard.record_update(update_index, loss, mean_reward, mean_episode_return);
+        let update_time_secs = update_start.elapsed().as_secs_f64();
+        dashboard.record_update(
+            update_index,
+            loss,
+            mean_reward,
+            mean_episode_return,
+            update_time_secs,
+        );
     }
 
     dashboard.finish();

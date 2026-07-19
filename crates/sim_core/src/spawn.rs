@@ -5,7 +5,9 @@ use bevy::prelude::*;
 use bevy_transform_interpolation::prelude::TransformInterpolation;
 
 use crate::control::JointTargetAngle;
-use crate::creature::{BodyDesc, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind};
+use crate::creature::{
+    BodyDesc, BodyPoseMap, BodyShape, CreatureDesc, CreatureInstance, JointDesc, JointKind,
+};
 use crate::env::{
     env_creature_collision_layers, env_origin, EnvId, EnvIsolationConfig, EnvRoot, SimBody,
     SimJoint,
@@ -33,15 +35,21 @@ pub fn spawn_env_root(
         .id()
 }
 
-/// Spawns a creature at the env world origin using absolute body poses.
+/// Spawns a creature at the env world origin from absolute body poses.
 ///
 /// Bodies are **not** parented under a hierarchy for physics safety: Avian
 /// owns their transforms, and we only tag them with [`SimBody`] / [`EnvId`].
+///
+/// `joint_zero_poses` defines revolute angle 0 via body orientations (typically
+/// [`crate::compute_zero_body_poses`]). Entity placement uses `placement_poses`,
+/// which may include default-angle / noise FK.
 pub fn spawn_creature(
     commands: &mut Commands,
     env_id: EnvId,
     world_origin: Vec3,
     creature: &CreatureDesc,
+    placement_poses: &BodyPoseMap,
+    joint_zero_poses: &BodyPoseMap,
     interpolate: bool,
 ) -> CreatureInstance {
     let layers = env_creature_collision_layers(env_id);
@@ -57,13 +65,22 @@ pub fn spawn_creature(
     let mut bodies: HashMap<String, Entity> = HashMap::new();
 
     for body in &creature.bodies {
-        let entity = spawn_body(commands, env_id, world_origin, body, layers, interpolate);
+        let pose = placement_poses
+            .get(&body.name)
+            .copied()
+            .unwrap_or(Transform::IDENTITY);
+        let entity = spawn_body(commands, env_id, world_origin, body, pose, layers, interpolate);
         bodies.insert(body.name.clone(), entity);
+    }
+
+    let mut zero_rotation_by_name: HashMap<&str, Quat> = HashMap::new();
+    for (name, pose) in joint_zero_poses {
+        zero_rotation_by_name.insert(name.as_str(), pose.rotation);
     }
 
     let mut joints: HashMap<String, Entity> = HashMap::new();
     for joint in &creature.joints {
-        let entity = spawn_joint(commands, env_id, &bodies, joint);
+        let entity = spawn_joint(commands, env_id, &bodies, &zero_rotation_by_name, joint);
         joints.insert(joint.name.clone(), entity);
     }
 
@@ -79,12 +96,16 @@ fn spawn_body(
     env_id: EnvId,
     world_origin: Vec3,
     body: &BodyDesc,
+    pose: Transform,
     layers: CollisionLayers,
     interpolate: bool,
 ) -> Entity {
     let collider = collider_from_shape(body.shape);
-    let translation = world_origin + body.pose.translation;
-    let transform = Transform::from_translation(translation).with_rotation(body.pose.rotation);
+    let transform = Transform {
+        translation: world_origin + pose.translation,
+        rotation: pose.rotation,
+        scale: Vec3::ONE,
+    };
 
     let mut entity_commands = commands.spawn((
         Name::new(format!("{}_{}", body.name, env_id.index())),
@@ -93,12 +114,12 @@ fn spawn_body(
             name: body.name.clone(),
         },
         RigidBody::Dynamic,
+        transform,
         collider,
         ColliderDensity(body.density),
         layers,
         Friction::new(0.8),
         Restitution::new(0.05),
-        transform,
     ));
 
     if interpolate {
@@ -125,6 +146,7 @@ fn spawn_joint(
     commands: &mut Commands,
     env_id: EnvId,
     bodies: &HashMap<String, Entity>,
+    zero_rotation_by_name: &HashMap<&str, Quat>,
     joint: &JointDesc,
 ) -> Entity {
     let body_a = *bodies
@@ -135,10 +157,29 @@ fn spawn_joint(
         .unwrap_or_else(|| panic!("joint `{}`: missing body `{}`", joint.name, joint.body_b));
 
     match &joint.kind {
-        JointKind::Revolute { axis, angle_limits } => {
+        JointKind::Revolute {
+            axis,
+            angle_limits,
+            ..
+        } => {
+            // Avian angle 0 is when the joint frames align. Bake the morphology
+            // zero pose into frame2 so authored relative orientation (e.g. hip
+            // capsule horizontal at angle 0) is angle 0.
+            let rotation_a = zero_rotation_by_name
+                .get(joint.body_a.as_str())
+                .copied()
+                .unwrap_or(Quat::IDENTITY);
+            let rotation_b = zero_rotation_by_name
+                .get(joint.body_b.as_str())
+                .copied()
+                .unwrap_or(Quat::IDENTITY);
+            let basis2 = (rotation_b.inverse() * rotation_a).normalize();
+
             let mut revolute = RevoluteJoint::new(body_a, body_b)
                 .with_local_anchor1(joint.anchor_a)
                 .with_local_anchor2(joint.anchor_b)
+                .with_local_basis1(Quat::IDENTITY)
+                .with_local_basis2(basis2)
                 .with_hinge_axis(*axis);
             if let Some((min, max)) = angle_limits {
                 revolute = revolute.with_angle_limits(*min, *max);
@@ -214,15 +255,14 @@ pub fn despawn_env(
     }
 }
 
-/// Cheap reset: teleport creature bodies to `creature` poses and zero velocities.
+/// Cheap reset: teleport creature bodies to `poses` and zero velocities.
 ///
 /// Keeps entities, colliders, and joints. Skips ground / non-[`CreaturePart`] bodies.
-/// Callers should rebuild `creature` with any spawn-pose randomization first.
 pub fn soft_reset_creature(
     commands: &mut Commands,
     env_id: EnvId,
     world_origin: Vec3,
-    creature: &CreatureDesc,
+    poses: &BodyPoseMap,
     bodies: &mut Query<(
         Entity,
         &SimBody,
@@ -235,11 +275,6 @@ pub fn soft_reset_creature(
     )>,
     joint_targets: &mut Query<(&SimJoint, &mut JointTargetAngle)>,
 ) {
-    let mut pose_by_name = HashMap::with_capacity(creature.bodies.len());
-    for body in &creature.bodies {
-        pose_by_name.insert(body.name.as_str(), body.pose);
-    }
-
     for (
         entity,
         sim_body,
@@ -254,7 +289,7 @@ pub fn soft_reset_creature(
         if sim_body.env_id != env_id {
             continue;
         }
-        let Some(pose) = pose_by_name.get(part.name.as_str()) else {
+        let Some(pose) = poses.get(part.name.as_str()) else {
             continue;
         };
 
